@@ -3,17 +3,78 @@ import os
 import re
 
 import cv2
+import enchant
 import numpy as np
 from PIL import Image
 from PIL import ImageDraw
 from PIL import ImageFont
 
 
+ENGLISH_DICT = enchant.Dict(
+    "en_US"
+)
+
+
+def _normalize_word_for_check(
+    word: str
+) -> str:
+
+    match = re.search(
+        r"[A-Za-z][A-Za-z'-]*",
+        word
+    )
+
+    return match.group(0) if match else ""
+
+
+def _is_english_word(
+    word: str
+) -> bool:
+
+    normalized_word = _normalize_word_for_check(
+        word
+    )
+
+    return bool(
+        normalized_word
+    ) and ENGLISH_DICT.check(
+        normalized_word
+    )
+
+
+def _replace_single_newline(
+    prev_line: str,
+    next_line: str
+) -> str:
+
+    prev_words = prev_line.split()
+    next_words = next_line.split()
+
+    if not prev_words or not next_words:
+        return ""
+
+    prev_word = prev_words[-1]
+    next_word = next_words[0]
+
+    if (
+        not _is_english_word(
+            prev_word
+        )
+        or
+        not _is_english_word(
+            next_word
+        )
+    ):
+        return ""
+
+    return " "
+
+
 def read_txt_content(
     txt_path: str
 ) -> str:
     """
-    读取txt文件内容：单个换行符删去，连续两个及以上换行符精简为一个。
+    读取txt文件内容，并根据换行上下文处理换行符。
     """
 
     with open(
@@ -32,12 +93,47 @@ def read_txt_content(
         "\n"
     )
 
-    return re.sub(
-        r"\n+",
-        lambda match: "\n"
-        if len(match.group(0)) >= 2
-        else " ",
+    parts = re.split(
+        r"(\n+)",
         text
+    )
+
+    output = []
+
+    for i, part in enumerate(
+        parts
+    ):
+
+        if not part.startswith(
+            "\n"
+        ):
+            output.append(
+                part
+            )
+            continue
+
+        if len(
+            part
+        ) >= 2:
+            output.append(
+                "\n"
+            )
+            continue
+
+        prev_line = parts[i - 1] if i > 0 else ""
+        next_line = parts[i + 1] if i + 1 < len(
+            parts
+        ) else ""
+
+        output.append(
+            _replace_single_newline(
+                prev_line,
+                next_line
+            )
+        )
+
+    return "".join(
+        output
     )
 
 
@@ -74,220 +170,256 @@ def generate_text_puzzle(
     grid_size=3,
 ):
     """
-    Parameters
-    ----------
-    page_text : str
+    Generate page-level text puzzle.
 
-    output_path : str
-        例如:
-        ./dataset/page_0001
+    Layout strategy:
+        Fill page row by row.
 
-    font_path : str
-        ttf字体路径
+        line0:
+            piece0 -> piece1 -> piece2
+
+        line1:
+            piece0 -> piece1 -> piece2
+
+        ...
+
+    Then extract each piece vertically.
     """
 
     page_w, page_h = page_size
 
-    img = Image.new(
-        "RGB",
-        (page_w, page_h),
-        "white"
-    )
-
-    draw = ImageDraw.Draw(img)
+    piece_w = page_w // grid_size
+    piece_h = page_h // grid_size
 
     font = ImageFont.truetype(
         font_path,
         font_size
     )
 
-    line_height = int(font_size * 1.5)
+    dummy_img = Image.new(
+        "RGB",
+        (100, 100)
+    )
 
-    x = margin
-    y = margin
+    dummy_draw = ImageDraw.Draw(
+        dummy_img
+    )
 
-    line_id = 0
-    char_id = 0
+    line_height = int(
+        font_size * 1.2
+    )
 
-    char_records = []
+    usable_w = (
+        piece_w - 2 * margin
+    )
 
-    for ch in page_text:
+    usable_h = (
+        piece_h - 2 * margin
+    )
 
-        if ch == "\n":
-            x = margin
-            y += line_height
-            line_id += 1
-            continue
+    max_piece_lines = max(
+        1,
+        usable_h // line_height
+    )
 
-        bbox = draw.textbbox(
-            (x, y),
-            ch,
-            font=font
+    # ==================================================
+    # tokenize
+    # ==================================================
+
+    tokens = re.findall(
+        r'\n|[A-Za-z0-9]+|[^\w\s]+| +',
+        page_text
+    )
+
+    # ==================================================
+    # page grid
+    # ==================================================
+
+    total_page_rows = (
+        max_piece_lines * grid_size
+    )
+
+    page_grid = [
+        [""] * grid_size
+        for _ in range(total_page_rows)
+    ]
+
+    row_idx = 0
+    col_idx = 0
+
+    current_text = ""
+
+    def flush_segment():
+
+        nonlocal current_text
+        nonlocal row_idx
+        nonlocal col_idx
+
+        page_grid[row_idx][col_idx] = (
+            current_text.strip()
         )
 
-        char_w = bbox[2] - bbox[0]
+        current_text = ""
 
-        if x + char_w > page_w - margin:
+        col_idx += 1
 
-            x = margin
-            y += line_height
-            line_id += 1
+        if col_idx >= grid_size:
 
-            bbox = draw.textbbox(
-                (x, y),
-                ch,
-                font=font
-            )
+            col_idx = 0
+            row_idx += 1
 
-            char_w = bbox[2] - bbox[0]
+    # ==================================================
+    # fill page
+    # ==================================================
 
-        if y + line_height > page_h - margin:
+    for token in tokens:
+
+        if row_idx >= total_page_rows:
             break
 
-        draw.text(
-            (x, y),
-            ch,
-            fill="black",
+        if token == "\n":
+
+            flush_segment()
+
+            if row_idx >= total_page_rows:
+                break
+
+            continue
+
+        candidate = (
+            current_text + token
+        )
+
+        bbox = dummy_draw.textbbox(
+            (0, 0),
+            candidate,
             font=font
         )
 
-        char_records.append(
-            {
-                "char_id": char_id,
-                "char": ch,
-                "line_id": line_id,
-                "line_center_y": y + line_height / 2,
-
-                "x1": bbox[0],
-                "y1": bbox[1],
-                "x2": bbox[2],
-                "y2": bbox[3],
-            }
+        width = (
+            bbox[2] - bbox[0]
         )
 
-        x += char_w
-        char_id += 1
+        if width <= usable_w:
 
-    piece_w = page_w // grid_size
-    piece_h = page_h // grid_size
+            current_text = candidate
+
+        else:
+
+            flush_segment()
+
+            if row_idx >= total_page_rows:
+                break
+
+            current_text = (
+                token.lstrip()
+            )
+
+    if (
+        row_idx < total_page_rows
+        and current_text.strip()
+    ):
+        page_grid[row_idx][col_idx] = (
+            current_text.strip()
+        )
+
+    # ==================================================
+    # build piece texts
+    # ==================================================
 
     labels = {
         "grid_size": grid_size,
-        "page_width": page_w,
-        "page_height": page_h,
+        "font_size": font_size,
         "pieces": []
     }
 
-    for row in range(grid_size):
+    for piece_id in range(
+        grid_size * grid_size
+    ):
 
-        for col in range(grid_size):
+        piece_row = (
+            piece_id // grid_size
+        )
 
-            piece_id = row * grid_size + col
+        piece_col = (
+            piece_id % grid_size
+        )
 
-            left = col * piece_w
-            top = row * piece_h
+        lines = []
 
-            right = (
-                page_w
-                if col == grid_size - 1
-                else (col + 1) * piece_w
-            )
+        start_row = (
+            piece_row * max_piece_lines
+        )
 
-            bottom = (
-                page_h
-                if row == grid_size - 1
-                else (row + 1) * piece_h
-            )
+        end_row = (
+            (piece_row + 1) * max_piece_lines
+        )
 
-            crop = img.crop(
-                (left, top, right, bottom)
-            )
+        for r in range(
+            start_row,
+            end_row
+        ):
 
-            crop.save(
-                f"{output_path}_{piece_id}.png"
-            )
+            if r >= len(page_grid):
+                break
 
-            piece_records = []
+            text = page_grid[r][piece_col]
 
-            for rec in char_records:
-
-                cx = (rec["x1"] + rec["x2"]) / 2
-                cy = rec["line_center_y"]
-
-                if (
-                    left <= cx < right
-                    and
-                    top <= cy < bottom
-                ):
-                    piece_records.append(
-                        {
-                            "char_id": rec["char_id"],
-                            "char": rec["char"],
-                            "line_id": rec["line_id"]
-                        }
-                    )
-
-            piece_records.sort(
-                key=lambda x: x["char_id"]
-            )
-
-            segments = []
-            current_segment = []
-
-            prev_char_id = None
-
-            for rec in piece_records:
-
-                if (
-                    prev_char_id is not None
-                    and
-                    rec["char_id"] != prev_char_id + 1
-                ):
-
-                    if current_segment:
-                        segments.append(
-                            "".join(current_segment)
-                        )
-
-                    current_segment = []
-
-                current_segment.append(
-                    rec["char"]
+            if text.strip():
+                lines.append(
+                    text
                 )
 
-                prev_char_id = rec["char_id"]
+        # render piece
 
-            if current_segment:
-                segments.append(
-                    "".join(current_segment)
-                )
+        img = Image.new(
+            "RGB",
+            (piece_w, piece_h),
+            "white"
+        )
 
-            piece_text ="<SEG>"+ " <SEG> ".join(
-                seg.strip()
-                for seg in segments
-                if seg.strip()
-            )+"<SEG>"
+        draw = ImageDraw.Draw(
+            img
+        )
 
-            labels["pieces"].append(
-                {
-                    "piece_id": piece_id,
-                    "row": row,
-                    "col": col,
+        y = margin
 
-                    "text": piece_text,
-                    "segments": segments,
+        for line in lines:
 
-                    "char_ids": [
-                        r["char_id"]
-                        for r in piece_records
-                    ],
-
-                    "image":
-                    os.path.basename(
-                        f"{output_path}_{piece_id}.png"
-                    )
-                }
+            draw.text(
+                (margin, y),
+                line,
+                fill="black",
+                font=font
             )
+
+            y += line_height
+
+        img_path = (
+            f"{output_path}_{piece_id}.png"
+        )
+
+        img.save(
+            img_path
+        )
+
+        piece_text ="<SEG>"+ "".join(
+            f"{line}<SEG>"
+            for line in lines
+        )
+
+        labels["pieces"].append(
+            {
+                "piece_id": piece_id,
+                "row": piece_row,
+                "col": piece_col,
+                "text": piece_text,
+                "segments": lines,
+                "image": os.path.basename(
+                    img_path
+                )
+            }
+        )
 
     with open(
         output_path + ".json",
@@ -311,7 +443,18 @@ def visualize_puzzle(
     wait_key: int = 0
 ):
     """
-    根据generate_text_puzzle的output_path读取拼图，并用cv2.imshow显示还原结果。
+    可视化generate_text_puzzle生成结果
+
+    Parameters
+    ----------
+    puzzle_path :
+        不带.json后缀
+
+    Example
+    -------
+    visualize_puzzle(
+        "./dataset/page_0001"
+    )
     """
 
     with open(
@@ -323,79 +466,88 @@ def visualize_puzzle(
         labels = json.load(f)
 
     grid_size = labels["grid_size"]
-    page_w = labels["page_width"]
-    page_h = labels["page_height"]
 
-    piece_w = page_w // grid_size
-    piece_h = page_h // grid_size
-
-    canvas = np.full(
-        (page_h, page_w, 3),
-        255,
-        dtype=np.uint8
+    pieces = sorted(
+        labels["pieces"],
+        key=lambda x: x["piece_id"]
     )
+
+    if len(pieces) == 0:
+        raise ValueError(
+            "No pieces found."
+        )
 
     puzzle_dir = os.path.dirname(
         puzzle_path
     )
 
-    for piece in labels["pieces"]:
+    first_img_path = os.path.join(
+        puzzle_dir,
+        pieces[0]["image"]
+    )
+
+    first_img = cv2.imread(
+        first_img_path
+    )
+
+    if first_img is None:
+        raise FileNotFoundError(
+            first_img_path
+        )
+
+    piece_h, piece_w = first_img.shape[:2]
+
+    canvas = np.full(
+        (
+            piece_h * grid_size,
+            piece_w * grid_size,
+            3
+        ),
+        255,
+        dtype=np.uint8
+    )
+
+    for piece in pieces:
 
         piece_id = piece["piece_id"]
-        row = piece["row"]
-        col = piece["col"]
+
+        row = piece_id // grid_size
+        col = piece_id % grid_size
 
         image_path = os.path.join(
             puzzle_dir,
             piece["image"]
         )
 
-        if not os.path.exists(
-            image_path
-        ):
-            image_path = f"{puzzle_path}_{piece_id}.png"
-
-        piece_img = cv2.imread(
+        img = cv2.imread(
             image_path
         )
 
-        if piece_img is None:
+        if img is None:
             raise FileNotFoundError(
-                f"Cannot read puzzle piece image: {image_path}"
+                image_path
             )
-
-        left = col * piece_w
-        top = row * piece_h
-
-        right = (
-            page_w
-            if col == grid_size - 1
-            else (col + 1) * piece_w
-        )
-
-        bottom = (
-            page_h
-            if row == grid_size - 1
-            else (row + 1) * piece_h
-        )
-
-        target_w = right - left
-        target_h = bottom - top
 
         if (
-            piece_img.shape[1] != target_w
+            img.shape[0] != piece_h
             or
-            piece_img.shape[0] != target_h
+            img.shape[1] != piece_w
         ):
-            piece_img = cv2.resize(
-                piece_img,
-                (target_w, target_h)
+            img = cv2.resize(
+                img,
+                (piece_w, piece_h)
             )
 
+        y1 = row * piece_h
+        y2 = y1 + piece_h
+
+        x1 = col * piece_w
+        x2 = x1 + piece_w
+
         canvas[
-            top:bottom,
-            left:right
-        ] = piece_img
+            y1:y2,
+            x1:x2
+        ] = img
 
     cv2.imshow(
         window_name,
@@ -431,7 +583,7 @@ def read_label_text(
     for piece in pieces:
 
         output.append(
-            f"=== Piece {piece['piece_id']} ==="
+            f"========== Piece {piece['piece_id']} =========="
         )
 
         output.append(
@@ -444,10 +596,10 @@ def read_label_text(
 
 if __name__=="__main__":
     resolution=576
-    test_font_path="Data/Font/BITCBLKAD.ttf"
+    test_font_path="Data/Font/cochocibscriptlatinpro.otf"
     test_puzzle_path=f"Data/PuzzleData/test-puzzle-{resolution}"
     test_text=read_txt_content("Data/RawData/18.txt")
     seg_list=split_text_by_max_length(test_text,4500)
-    generate_text_puzzle(seg_list[5],test_puzzle_path,test_font_path,(resolution,resolution),font_size=10,margin=1,grid_size=3)
+    generate_text_puzzle(seg_list[5],test_puzzle_path,test_font_path,(resolution,resolution),font_size=resolution//30,margin=1,grid_size=3)
     print(read_label_text(test_puzzle_path+".json"))
     visualize_puzzle(test_puzzle_path)
