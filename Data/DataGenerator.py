@@ -1,5 +1,6 @@
 import json
 import os
+import random
 import re
 
 import cv2
@@ -160,6 +161,516 @@ def split_text_by_max_length(
     ]
 
 
+def _draw_erosion_edge(
+    draw: ImageDraw.ImageDraw,
+    piece_w: int,
+    piece_h: int,
+    erosion_width: int,
+    side: str,
+):
+
+    if erosion_width <= 0:
+        return
+
+    if side in (
+        "top",
+        "bottom"
+    ):
+        length = piece_w
+    else:
+        length = piece_h
+
+    min_step = max(
+        4,
+        erosion_width // 2
+    )
+
+    max_step = max(
+        min_step + 1,
+        erosion_width * 2
+    )
+
+    edge_points = []
+
+    pos = 0
+
+    while pos < length:
+
+        depth = random.randint(
+            0,
+            erosion_width
+        )
+
+        if side == "top":
+            edge_points.append(
+                (pos, depth)
+            )
+        elif side == "bottom":
+            edge_points.append(
+                (pos, piece_h - 1 - depth)
+            )
+        elif side == "left":
+            edge_points.append(
+                (depth, pos)
+            )
+        else:
+            edge_points.append(
+                (piece_w - 1 - depth, pos)
+            )
+
+        pos += random.randint(
+            min_step,
+            max_step
+        )
+
+    if side == "top":
+        edge_points.append(
+            (piece_w - 1, random.randint(0, erosion_width))
+        )
+        polygon = [
+            (0, 0),
+            (piece_w - 1, 0),
+            *reversed(edge_points),
+        ]
+    elif side == "bottom":
+        edge_points.append(
+            (piece_w - 1, piece_h - 1 - random.randint(0, erosion_width))
+        )
+        polygon = [
+            (0, piece_h - 1),
+            (piece_w - 1, piece_h - 1),
+            *reversed(edge_points),
+        ]
+    elif side == "left":
+        edge_points.append(
+            (random.randint(0, erosion_width), piece_h - 1)
+        )
+        polygon = [
+            (0, 0),
+            (0, piece_h - 1),
+            *reversed(edge_points),
+        ]
+    else:
+        edge_points.append(
+            (piece_w - 1 - random.randint(0, erosion_width), piece_h - 1)
+        )
+        polygon = [
+            (piece_w - 1, 0),
+            (piece_w - 1, piece_h - 1),
+            *reversed(edge_points),
+        ]
+
+    draw.polygon(
+        polygon,
+        fill="black"
+    )
+
+
+def _draw_erosion(
+    draw: ImageDraw.ImageDraw,
+    piece_w: int,
+    piece_h: int,
+    erosion_width: int,
+):
+
+    for side in (
+        "top",
+        "right",
+        "bottom",
+        "left"
+    ):
+        _draw_erosion_edge(
+            draw,
+            piece_w,
+            piece_h,
+            erosion_width,
+            side
+        )
+
+
+def _fade(
+    value
+):
+
+    return (
+        6 * value ** 5
+        - 15 * value ** 4
+        + 10 * value ** 3
+    )
+
+
+def _lerp(
+    start,
+    end,
+    weight
+):
+
+    return start + weight * (
+        end - start
+    )
+
+
+def _perlin_noise(
+    width: int,
+    height: int,
+    cell_size: int = 64
+):
+
+    cells_x = max(
+        1,
+        int(np.ceil(width / cell_size))
+    )
+
+    cells_y = max(
+        1,
+        int(np.ceil(height / cell_size))
+    )
+
+    x = np.linspace(
+        0,
+        cells_x,
+        width,
+        endpoint=False
+    )
+
+    y = np.linspace(
+        0,
+        cells_y,
+        height,
+        endpoint=False
+    )
+
+    xi = x.astype(int)
+    yi = y.astype(int)
+
+    xf = x - xi
+    yf = y - yi
+
+    xi_grid, yi_grid = np.meshgrid(
+        xi,
+        yi
+    )
+
+    xf_grid, yf_grid = np.meshgrid(
+        xf,
+        yf
+    )
+
+    angles = np.random.random(
+        (cells_y + 1, cells_x + 1)
+    ) * 2 * np.pi
+
+    gradients = np.dstack(
+        (
+            np.cos(angles),
+            np.sin(angles)
+        )
+    )
+
+    g00 = gradients[
+        yi_grid,
+        xi_grid
+    ]
+
+    g10 = gradients[
+        yi_grid,
+        xi_grid + 1
+    ]
+
+    g01 = gradients[
+        yi_grid + 1,
+        xi_grid
+    ]
+
+    g11 = gradients[
+        yi_grid + 1,
+        xi_grid + 1
+    ]
+
+    n00 = (
+        g00[..., 0] * xf_grid
+        + g00[..., 1] * yf_grid
+    )
+
+    n10 = (
+        g10[..., 0] * (xf_grid - 1)
+        + g10[..., 1] * yf_grid
+    )
+
+    n01 = (
+        g01[..., 0] * xf_grid
+        + g01[..., 1] * (yf_grid - 1)
+    )
+
+    n11 = (
+        g11[..., 0] * (xf_grid - 1)
+        + g11[..., 1] * (yf_grid - 1)
+    )
+
+    u = _fade(
+        xf_grid
+    )
+
+    v = _fade(
+        yf_grid
+    )
+
+    nx0 = _lerp(
+        n00,
+        n10,
+        u
+    )
+
+    nx1 = _lerp(
+        n01,
+        n11,
+        u
+    )
+
+    noise = _lerp(
+        nx0,
+        nx1,
+        v
+    )
+
+    noise_min = noise.min()
+    noise_max = noise.max()
+
+    if noise_max == noise_min:
+        return np.zeros(
+            (height, width),
+            dtype=np.float32
+        )
+
+    return (
+        (noise - noise_min)
+        / (noise_max - noise_min)
+    ).astype(
+        np.float32
+    )
+
+
+def _create_paper_image(
+    width: int,
+    height: int,
+    paper_yellowing: bool
+):
+
+    if not paper_yellowing:
+        return Image.new(
+            "RGB",
+            (width, height),
+            "white"
+        )
+
+    paper_brightness = random.randint(
+        220,
+        245
+    )
+
+    base_color = np.array(
+        [
+            paper_brightness,
+            paper_brightness - random.randint(8, 18),
+            paper_brightness - random.randint(25, 45)
+        ],
+        dtype=np.float32
+    )
+
+    large_noise = _perlin_noise(
+        width,
+        height,
+        cell_size=max(
+            32,
+            min(width, height) // 2
+        )
+    )
+
+    small_noise = np.random.normal(
+        0,
+        3,
+        (height, width)
+    )
+
+    y, x = np.indices(
+        (height, width)
+    )
+
+    center_x = (
+        width - 1
+    ) / 2
+
+    center_y = (
+        height - 1
+    ) / 2
+
+    radius = np.sqrt(
+        (
+            (x - center_x)
+            / max(center_x, 1)
+        ) ** 2
+        + (
+            (y - center_y)
+            / max(center_y, 1)
+        ) ** 2
+    )
+
+    edge_strength = np.clip(
+        radius,
+        0,
+        1
+    ) ** 1.8
+
+    vertical_gradient = (
+        y / max(height, 1)
+    )
+
+    yellow_strength = (
+        large_noise * 10
+        + edge_strength * 20
+        + vertical_gradient * 4
+        + small_noise
+    )
+
+    yellow_tint = np.array(
+        [1.0, 0.5, -0.3],
+        dtype=np.float32
+    )
+
+    paper = (
+        base_color
+        + yellow_strength[..., None] * yellow_tint
+    )
+
+    scan_noise = np.random.normal(
+        0,
+        2,
+        (height, width, 1)
+    )
+
+    paper += scan_noise
+
+    paper = np.clip(
+        paper,
+        0,
+        255
+    ).astype(
+        np.uint8
+    )
+
+    return Image.fromarray(
+        paper,
+        "RGB"
+    )
+
+
+def _get_text_width(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.FreeTypeFont
+) -> int:
+
+    bbox = draw.textbbox(
+        (0, 0),
+        text,
+        font=font
+    )
+
+    return bbox[2] - bbox[0]
+
+
+def _draw_adjusted_line(
+    draw: ImageDraw.ImageDraw,
+    line: str,
+    y: int,
+    font: ImageFont.FreeTypeFont,
+    fill: str,
+    left: int,
+    usable_w: int
+):
+
+    words = line.split()
+
+    if len(words) <= 1:
+
+        line_w = _get_text_width(
+            draw,
+            line,
+            font
+        )
+
+        x = left + max(
+            0,
+            (usable_w - line_w) / 2
+        )
+
+        draw.text(
+            (x, y),
+            line,
+            fill=fill,
+            font=font
+        )
+
+        return
+
+    word_widths = [
+        _get_text_width(
+            draw,
+            word,
+            font
+        )
+        for word in words
+    ]
+
+    words_w = sum(
+        word_widths
+    )
+
+    line_w = _get_text_width(
+        draw,
+        line,
+        font
+    )
+
+    if words_w >= usable_w:
+
+        x = left + max(
+            0,
+            (usable_w - line_w) / 2
+        )
+
+        draw.text(
+            (x, y),
+            line,
+            fill=fill,
+            font=font
+        )
+
+        return
+
+    gap = (
+        usable_w - words_w
+    ) / (
+        len(words) + 1
+    )
+
+    x = left + gap
+
+    for word, word_w in zip(
+        words,
+        word_widths
+    ):
+
+        draw.text(
+            (x, y),
+            word,
+            fill=fill,
+            font=font
+        )
+
+        x += word_w + gap
+
+
 def generate_text_puzzle(
     page_text: str,
     output_path: str,
@@ -168,6 +679,9 @@ def generate_text_puzzle(
     font_size=32,
     margin=120,
     grid_size=3,
+    erosion=False,
+    erosion_width=0,
+    paper_yellowing=True,
 ):
     """
     Generate page-level text puzzle.
@@ -191,6 +705,21 @@ def generate_text_puzzle(
     piece_w = page_w // grid_size
     piece_h = page_h // grid_size
 
+    edge_margin = margin
+
+    if erosion:
+
+        erosion_width = max(
+            0,
+            int(erosion_width)
+        )
+
+        edge_margin += erosion_width
+
+    else:
+
+        erosion_width = 0
+
     font = ImageFont.truetype(
         font_path,
         font_size
@@ -210,12 +739,21 @@ def generate_text_puzzle(
     )
 
     usable_w = (
-        piece_w - 2 * margin
+        piece_w - 2 * edge_margin
     )
 
     usable_h = (
-        piece_h - 2 * margin
+        piece_h - 2 * edge_margin
     )
+
+    if (
+        usable_w <= 0
+        or
+        usable_h <= 0
+    ):
+        raise ValueError(
+            "margin and erosion_width leave no usable area for text"
+        )
 
     max_piece_lines = max(
         1,
@@ -249,7 +787,10 @@ def generate_text_puzzle(
 
     current_text = ""
 
-    def flush_segment():
+    def flush_segment(
+        advance_col: bool = True,
+        keep_newline: bool = False
+    ):
 
         nonlocal current_text
         nonlocal row_idx
@@ -257,16 +798,24 @@ def generate_text_puzzle(
 
         page_grid[row_idx][col_idx] = (
             current_text.strip()
+            + ("\n" if keep_newline else "")
         )
 
         current_text = ""
 
-        col_idx += 1
+        if advance_col:
 
-        if col_idx >= grid_size:
+            col_idx += 1
 
-            col_idx = 0
+            if col_idx >= grid_size:
+
+                col_idx = 0
+                row_idx += 1
+
+        else:
+
             row_idx += 1
+            col_idx = 0
 
     # ==================================================
     # fill page
@@ -279,7 +828,10 @@ def generate_text_puzzle(
 
         if token == "\n":
 
-            flush_segment()
+            flush_segment(
+                advance_col=False,
+                keep_newline=True
+            )
 
             if row_idx >= total_page_rows:
                 break
@@ -330,8 +882,22 @@ def generate_text_puzzle(
     labels = {
         "grid_size": grid_size,
         "font_size": font_size,
+        "erosion": erosion,
+        "erosion_width": erosion_width,
+        "paper_yellowing": paper_yellowing,
+        "paper_effect": (
+            "random_base_perlin_edge_scan_noise"
+            if paper_yellowing
+            else "white"
+        ),
         "pieces": []
     }
+
+    paper_img = _create_paper_image(
+        page_w,
+        page_h,
+        paper_yellowing
+    )
 
     for piece_id in range(
         grid_size * grid_size
@@ -345,7 +911,8 @@ def generate_text_puzzle(
             piece_id % grid_size
         )
 
-        lines = []
+        render_lines = []
+        label_lines = []
 
         start_row = (
             piece_row * max_piece_lines
@@ -365,35 +932,64 @@ def generate_text_puzzle(
 
             text = page_grid[r][piece_col]
 
-            if text.strip():
-                lines.append(
+            render_lines.append(
+                text
+            )
+
+            if (
+                text.strip()
+                or
+                text == "\n"
+            ):
+                label_lines.append(
                     text
                 )
 
         # render piece
 
-        img = Image.new(
-            "RGB",
-            (piece_w, piece_h),
-            "white"
+        img = paper_img.crop(
+            (
+                piece_col * piece_w,
+                piece_row * piece_h,
+                (piece_col + 1) * piece_w,
+                (piece_row + 1) * piece_h
+            )
         )
 
         draw = ImageDraw.Draw(
             img
         )
 
-        y = margin
+        y = edge_margin
 
-        for line in lines:
+        for line in render_lines:
 
-            draw.text(
-                (margin, y),
-                line,
-                fill="black",
-                font=font
+            render_line = line.rstrip(
+                "\n"
             )
 
+            if render_line:
+
+                _draw_adjusted_line(
+                    draw,
+                    render_line,
+                    y,
+                    font,
+                    "black",
+                    edge_margin,
+                    usable_w
+                )
+
             y += line_height
+
+        if erosion:
+
+            _draw_erosion(
+                draw,
+                piece_w,
+                piece_h,
+                erosion_width
+            )
 
         img_path = (
             f"{output_path}_{piece_id}.png"
@@ -405,7 +1001,7 @@ def generate_text_puzzle(
 
         piece_text ="<SEG>"+ "".join(
             f"{line}<SEG>"
-            for line in lines
+            for line in label_lines
         )
 
         labels["pieces"].append(
@@ -414,7 +1010,7 @@ def generate_text_puzzle(
                 "row": piece_row,
                 "col": piece_col,
                 "text": piece_text,
-                "segments": lines,
+                "segments": label_lines,
                 "image": os.path.basename(
                     img_path
                 )
@@ -596,10 +1192,10 @@ def read_label_text(
 
 if __name__=="__main__":
     resolution=576
-    test_font_path="Data/Font/cochocibscriptlatinpro.otf"
+    test_font_path="Data/Font/KaiTi.ttf"
     test_puzzle_path=f"Data/PuzzleData/test-puzzle-{resolution}"
     test_text=read_txt_content("Data/RawData/18.txt")
     seg_list=split_text_by_max_length(test_text,4500)
-    generate_text_puzzle(seg_list[5],test_puzzle_path,test_font_path,(resolution,resolution),font_size=resolution//30,margin=1,grid_size=3)
+    generate_text_puzzle(seg_list[5],test_puzzle_path,test_font_path,(resolution,resolution),font_size=resolution//40,margin=1,grid_size=3,erosion=True,erosion_width=5)
     print(read_label_text(test_puzzle_path+".json"))
     visualize_puzzle(test_puzzle_path)
