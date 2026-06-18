@@ -1,7 +1,9 @@
+import argparse
 import json
 import os
 import random
 import re
+from pathlib import Path
 
 import cv2
 import enchant
@@ -1190,12 +1192,212 @@ def read_label_text(
 
     return "\n".join(output)
 
-if __name__=="__main__":
-    resolution=576
-    test_font_path="Data/Font/KaiTi.ttf"
-    test_puzzle_path=f"Data/PuzzleData/test-puzzle-{resolution}"
-    test_text=read_txt_content("Data/RawData/18.txt")
-    seg_list=split_text_by_max_length(test_text,4500)
-    generate_text_puzzle(seg_list[5],test_puzzle_path,test_font_path,(resolution,resolution),font_size=resolution//40,margin=1,grid_size=3,erosion=True,erosion_width=5)
-    print(read_label_text(test_puzzle_path+".json"))
-    visualize_puzzle(test_puzzle_path)
+
+def _iter_txt_paths(txt_dir: str) -> list[str]:
+    txt_dir = os.path.abspath(txt_dir)
+    file_paths = []
+
+    for root, _, files in os.walk(txt_dir):
+        for file_name in files:
+            if file_name.lower().endswith(".txt"):
+                file_paths.append(os.path.join(root, file_name))
+
+    return file_paths
+
+
+def _iter_font_paths(font_dir: str) -> list[str]:
+    path = Path(font_dir)
+    if not path.exists():
+        return []
+
+    font_paths = [
+        str(p)
+        for p in path.rglob("*")
+        if p.is_file() and p.suffix.lower() in {".ttf", ".otf", ".ttc"}
+    ]
+    return sorted(font_paths)
+
+
+def _parse_image_size(image_size) -> tuple[int, int]:
+    if isinstance(image_size, int):
+        return (image_size, image_size)
+
+    if isinstance(image_size, tuple):
+        return image_size
+
+    text = str(image_size).lower().replace("x", ",").replace(" ", "")
+    parts = [p for p in text.split(",") if p]
+
+    if len(parts) == 1:
+        size = int(parts[0])
+        return (size, size)
+
+    if len(parts) == 2:
+        return (int(parts[0]), int(parts[1]))
+
+    raise ValueError("image_size must be an int or width,height")
+
+
+def generate_dataset_from_dirs(
+    txt_dir: str,
+    font_dir: str,
+    segment_chars: int,
+    sample_num: int,
+    output_dir: str,
+    image_size=(576, 576),
+    grid_size=3,
+    margin=1,
+    erosion_width: int | None = None,
+):
+    txt_paths = _iter_txt_paths(txt_dir)
+    if not txt_paths:
+        raise ValueError(f"No .txt files found under {txt_dir}")
+
+    font_paths = _iter_font_paths(font_dir)
+    if not font_paths:
+        raise ValueError(f"No font files found under {font_dir}")
+
+    if segment_chars <= 0:
+        raise ValueError("segment_chars must be greater than 0")
+
+    if sample_num <= 0:
+        raise ValueError("sample_num must be greater than 0")
+
+    page_size = _parse_image_size(image_size)
+    os.makedirs(output_dir, exist_ok=True)
+
+    font_size_labels = {
+        "large": max(12, min(page_size) // 20),
+        "medium": max(10, min(page_size) // 24),
+        "small": max(8, min(page_size) // 30),
+    }
+
+    if erosion_width is None:
+        erosion_width = max(1, min(page_size) // 120)
+
+    file_cache: dict[str, str] = {}
+
+    def _load_text(path: str) -> str:
+        if path not in file_cache:
+            file_cache[path] = read_txt_content(path)
+        return file_cache[path]
+
+    def _pick_unique_segment(seen_segments: set[str]) -> str:
+        max_attempts = 200
+
+        for attempt in range(max_attempts):
+            txt_path = random.choice(txt_paths)
+            text = _load_text(txt_path)
+            if not text:
+                continue
+
+            if len(text) <= segment_chars:
+                segment = text.strip()
+            else:
+                start = random.randint(0, len(text) - segment_chars)
+                segment = text[start:start + segment_chars].strip()
+
+            if not segment:
+                continue
+
+            if segment in seen_segments:
+                continue
+
+            return segment
+
+        raise RuntimeError(
+            "Unable to select a unique text segment after "
+            f"{max_attempts} attempts. Try increasing txt data or lowering sample_num."
+        )
+
+    results = []
+    seen_segments: set[str] = set()
+    resolution = page_size[0]
+
+    for font_path in font_paths:
+        font_name = Path(font_path).stem
+
+        for erosion in (False, True):
+            for yellow in (False, True):
+                for font_size_label, font_size in font_size_labels.items():
+                    for sample_idx in range(sample_num):
+                        text_segment = _pick_unique_segment(seen_segments)
+                        seen_segments.add(text_segment)
+
+                        puzzle_name = (
+                            f"{resolution}_{font_name}_{int(erosion)}_"
+                            f"{int(yellow)}_{font_size_label}_{sample_idx}"
+                        )
+                        output_base = os.path.join(output_dir, puzzle_name)
+
+                        generate_text_puzzle(
+                            text_segment,
+                            output_base,
+                            font_path,
+                            page_size=page_size,
+                            font_size=font_size,
+                            margin=margin,
+                            grid_size=grid_size,
+                            erosion=erosion,
+                            erosion_width=erosion_width if erosion else 0,
+                            paper_yellowing=yellow,
+                        )
+                        results.append(output_base)
+
+    return results
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Generate text puzzle data from a text folder and font folder."
+    )
+    parser.add_argument("--txt-dir", required=True, help="Path to a folder containing .txt files")
+    parser.add_argument("--font-dir", required=True, help="Path to a folder containing font files (.ttf, .otf, .ttc)")
+    parser.add_argument(
+        "--segment-chars",
+        type=int,
+        required=True,
+        help="Number of characters in each generated text segment",
+    )
+    parser.add_argument(
+        "--sample-num",
+        type=int,
+        required=True,
+        help="Number of samples to generate for each font/variation/font size",
+    )
+    parser.add_argument(
+        "--image-size",
+        default="576",
+        help="Image resolution: single value or width,height. Default is 576",
+    )
+    parser.add_argument(
+        "--output-dir",
+        required=True,
+        help="Directory to write generated puzzles and labels",
+    )
+    parser.add_argument(
+        "--grid-size",
+        type=int,
+        default=3,
+        help="Grid size for each puzzle page. Default is 3",
+    )
+    parser.add_argument(
+        "--margin",
+        type=int,
+        default=1,
+        help="Margin around text inside each puzzle piece. Default is 1",
+    )
+    args = parser.parse_args()
+
+    generated = generate_dataset_from_dirs(
+        args.txt_dir,
+        args.font_dir,
+        args.segment_chars,
+        args.sample_num,
+        args.output_dir,
+        image_size=args.image_size,
+        grid_size=args.grid_size,
+        margin=args.margin,
+    )
+
+    print(f"Generated {len(generated)} puzzle bases in {args.output_dir}")
