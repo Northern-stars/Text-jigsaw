@@ -2,3 +2,7 @@
 Data/Font
 Data/PuzzleData
 Data/RawData
+*._*
+output/*
+sample/*
+Solver/checkpoints/*

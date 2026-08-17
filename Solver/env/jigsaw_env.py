@@ -1,8 +1,14 @@
-"""Reinforcement-learning environment for 3x3 text jigsaw puzzles."""
+"""Reinforcement-learning environment for 3x3 text jigsaw puzzles.
+
+The environment can read both the original ``Data/PuzzleData`` JSON samples and
+the Newspaper Navigator OCR jigsaw dataset produced by
+``Data/newspaper-navigator/create_jigsaw_ocr_dataset.py``.
+"""
 
 from __future__ import annotations
 
 import json
+import re
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +20,8 @@ from PIL import Image
 
 GRID_SIZE = 3
 PIECE_COUNT = GRID_SIZE * GRID_SIZE
+CENTER_INDEX = PIECE_COUNT // 2
+MOVABLE_POSITIONS = tuple(position for position in range(PIECE_COUNT) if position != CENTER_INDEX)
 SOLVED_ORDER = list(range(PIECE_COUNT))
 HORIZONTAL_PAIRS = ((0, 1), (1, 2), (3, 4), (4, 5), (6, 7), (7, 8))
 VERTICAL_PAIRS = ((0, 3), (1, 4), (2, 5), (3, 6), (4, 7), (5, 8))
@@ -28,10 +36,11 @@ class Piece:
     segments: list[str]
     image_path: Path
     image: Image.Image
+    chars: list[dict[str, object]]
 
 
 class TextJigsawEnv:
-    """3x3 text jigsaw environment with swap actions.
+    """3x3 text jigsaw environment with a fixed center piece and swap actions.
 
     Observation format:
         {
@@ -62,7 +71,7 @@ class TextJigsawEnv:
         self.image_transform = image_transform
         self.rng = random.Random(seed)
 
-        self.sample_paths = sorted(self.dataset_dir.rglob("*.json"))
+        self.sample_paths = self._discover_sample_paths(self.dataset_dir)
         if not self.sample_paths:
             raise ValueError(f"No .json files found under {self.dataset_dir}")
 
@@ -106,26 +115,64 @@ class TextJigsawEnv:
     def render(self) -> Image.Image:
         return self._build_current_image()
 
+    def _discover_sample_paths(self, dataset_path: Path) -> list[Path]:
+        if dataset_path.is_file():
+            if dataset_path.name == "manifest.json":
+                return self._sample_paths_from_manifest(dataset_path)
+            return [dataset_path]
+
+        manifest_path = dataset_path / "manifest.json"
+        if manifest_path.exists():
+            manifest_samples = self._sample_paths_from_manifest(manifest_path)
+            if manifest_samples:
+                return manifest_samples
+
+        label_paths = sorted(dataset_path.rglob("label.json"))
+        if label_paths:
+            return label_paths
+
+        return sorted(
+            path
+            for path in dataset_path.rglob("*.json")
+            if path.name != "manifest.json"
+        )
+
+    def _sample_paths_from_manifest(self, manifest_path: Path) -> list[Path]:
+        with manifest_path.open("r", encoding="utf-8") as f:
+            manifest = json.load(f)
+
+        paths = []
+        for puzzle in manifest.get("puzzles", []):
+            label_path = puzzle.get("label_path")
+            if not label_path:
+                continue
+            paths.append(self._resolve_path(str(label_path), manifest_path, must_exist=False))
+
+        return [path for path in paths if path.exists()]
+
     def _load_sample(self, json_path: Path) -> list[Piece]:
         with json_path.open("r", encoding="utf-8") as f:
             labels = json.load(f)
 
-        if labels.get("grid_size") != GRID_SIZE:
-            raise ValueError(f"{json_path} has grid_size={labels.get('grid_size')}")
+        rows, cols = self._read_grid_shape(labels, json_path)
+        if rows != GRID_SIZE or cols != GRID_SIZE:
+            raise ValueError(
+                f"{json_path} has grid shape {rows}x{cols}; "
+                f"this agent environment expects {GRID_SIZE}x{GRID_SIZE}"
+            )
 
         raw_pieces = labels.get("pieces", [])
         if len(raw_pieces) != PIECE_COUNT:
             raise ValueError(f"{json_path} must contain {PIECE_COUNT} pieces")
 
         by_id = {}
-        sample_dir = json_path.parent
         base_size: Optional[tuple[int, int]] = None
 
         for raw_piece in raw_pieces:
-            piece_id = int(raw_piece["piece_id"])
-            image_path = sample_dir / raw_piece["image"]
-            if not image_path.exists():
-                raise FileNotFoundError(str(image_path))
+            piece_id = self._piece_index(raw_piece, rows, cols)
+            row = int(raw_piece.get("row", piece_id // cols))
+            col = int(raw_piece.get("col", piece_id % cols))
+            image_path = self._resolve_piece_image_path(raw_piece, json_path)
 
             image = Image.open(image_path).convert("RGB")
             if base_size is None:
@@ -135,16 +182,24 @@ class TextJigsawEnv:
 
             segments = raw_piece.get("segments")
             if not isinstance(segments, list):
-                segments = self._fallback_segments(raw_piece.get("text", ""))
+                chars = raw_piece.get("chars", [])
+                if self.reconstruct_text_by_line and isinstance(chars, list):
+                    segments = self._segments_from_chars(chars, str(raw_piece.get("text", "")))
+                else:
+                    segments = self._fallback_segments(str(raw_piece.get("text", "")))
+            chars = raw_piece.get("chars", [])
+            if not isinstance(chars, list):
+                chars = []
 
             by_id[piece_id] = Piece(
                 piece_id=piece_id,
-                row=int(raw_piece.get("row", piece_id // GRID_SIZE)),
-                col=int(raw_piece.get("col", piece_id % GRID_SIZE)),
+                row=row,
+                col=col,
                 text=str(raw_piece.get("text", "")),
                 segments=[str(segment) for segment in segments],
                 image_path=image_path,
                 image=image,
+                chars=[dict(char) for char in chars if isinstance(char, dict)],
             )
 
         expected_ids = set(SOLVED_ORDER)
@@ -153,16 +208,165 @@ class TextJigsawEnv:
 
         return [by_id[piece_id] for piece_id in SOLVED_ORDER]
 
+    def _read_grid_shape(self, labels: dict, json_path: Path) -> tuple[int, int]:
+        meta = labels.get("meta", {})
+        if isinstance(meta, dict) and "rows" in meta and "cols" in meta:
+            return int(meta["rows"]), int(meta["cols"])
+
+        grid_size = labels.get("grid_size")
+        if grid_size is not None:
+            grid_size = int(grid_size)
+            return grid_size, grid_size
+
+        raise ValueError(f"{json_path} does not declare a supported grid shape")
+
+    def _piece_index(self, raw_piece: dict, rows: int, cols: int) -> int:
+        raw_piece_id = raw_piece.get("piece_id")
+        if isinstance(raw_piece_id, int):
+            return raw_piece_id
+
+        if isinstance(raw_piece_id, str):
+            if raw_piece_id.isdigit():
+                return int(raw_piece_id)
+
+            match = re.fullmatch(r"r(\d+)_c(\d+)", raw_piece_id)
+            if match is not None:
+                row = int(match.group(1))
+                col = int(match.group(2))
+                return row * cols + col
+
+        row = int(raw_piece["row"])
+        col = int(raw_piece["col"])
+        return row * cols + col
+
+    def _resolve_piece_image_path(self, raw_piece: dict, json_path: Path) -> Path:
+        raw_path = raw_piece.get("piece_path", raw_piece.get("image"))
+        if not raw_path:
+            raise ValueError(f"{json_path} contains a piece without piece_path/image")
+        return self._resolve_path(str(raw_path), json_path, must_exist=True)
+
+    def _resolve_path(self, raw_path: str, json_path: Path, must_exist: bool) -> Path:
+        path = Path(raw_path)
+        if path.is_absolute():
+            if must_exist and not path.exists():
+                raise FileNotFoundError(str(path))
+            return path
+
+        bases: list[Path] = [json_path.parent]
+        if self.dataset_dir.is_dir():
+            bases.append(self.dataset_dir)
+        else:
+            bases.append(self.dataset_dir.parent)
+        bases.extend(json_path.parents)
+        bases.append(Path.cwd())
+
+        seen = set()
+        for base in bases:
+            try:
+                candidate = (base / path).resolve()
+            except OSError:
+                candidate = base / path
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            if candidate.exists():
+                return candidate
+
+        fallback = (json_path.parent / path).resolve()
+        if must_exist:
+            raise FileNotFoundError(str(fallback))
+        return fallback
+
     def _fallback_segments(self, text: str) -> list[str]:
         if not text:
             return []
         segments = [segment for segment in text.split("<SEG>") if segment]
         return segments if segments else [text]
 
+    def _segments_from_chars(self, chars: list[dict[str, object]], fallback_text: str) -> list[str]:
+        char_items = [char for char in chars if self._char_bbox(char) is not None]
+        if not char_items:
+            return self._fallback_segments(fallback_text)
+
+        lines: list[list[dict[str, object]]] = []
+        line_centers: list[float] = []
+
+        for char in sorted(char_items, key=lambda item: (self._char_center_y(item), self._char_x1(item))):
+            center_y = self._char_center_y(char)
+            height = self._char_height(char)
+            threshold = max(4.0, height * 0.75)
+
+            line_index = None
+            for index, line_center in enumerate(line_centers):
+                if abs(center_y - line_center) <= threshold:
+                    line_index = index
+                    break
+
+            if line_index is None:
+                lines.append([char])
+                line_centers.append(center_y)
+            else:
+                lines[line_index].append(char)
+                line = lines[line_index]
+                line_centers[line_index] = sum(self._char_center_y(item) for item in line) / len(line)
+
+        segments = []
+        for line in sorted(lines, key=lambda item: min(self._char_center_y(char) for char in item)):
+            text = self._text_from_chars(sorted(line, key=self._char_x1))
+            if text:
+                segments.append(text)
+
+        return segments or self._fallback_segments(fallback_text)
+
+    def _text_from_chars(self, chars: list[dict[str, object]]) -> str:
+        words: list[str] = []
+        current_word_id: object | None = None
+        current_chars: list[str] = []
+
+        for char_info in chars:
+            word_id = char_info.get("word_id")
+            if current_chars and word_id != current_word_id:
+                words.append("".join(current_chars))
+                current_chars = []
+            current_word_id = word_id
+            current_chars.append(str(char_info.get("char", "")))
+
+        if current_chars:
+            words.append("".join(current_chars))
+
+        return " ".join(word for word in words if word)
+
+    @staticmethod
+    def _char_bbox(char: dict[str, object]) -> Optional[list[float]]:
+        bbox = char.get("bbox")
+        if not isinstance(bbox, list) or len(bbox) != 4:
+            return None
+        try:
+            return [float(value) for value in bbox]
+        except (TypeError, ValueError):
+            return None
+
+    def _char_x1(self, char: dict[str, object]) -> float:
+        bbox = self._char_bbox(char)
+        return bbox[0] if bbox is not None else 0.0
+
+    def _char_center_y(self, char: dict[str, object]) -> float:
+        bbox = self._char_bbox(char)
+        return ((bbox[1] + bbox[3]) / 2.0) if bbox is not None else 0.0
+
+    def _char_height(self, char: dict[str, object]) -> float:
+        bbox = self._char_bbox(char)
+        return (bbox[3] - bbox[1]) if bbox is not None else 0.0
+
     def _make_initial_order(self) -> list[int]:
         order = SOLVED_ORDER.copy()
+        movable_piece_ids = list(MOVABLE_POSITIONS)
         for _ in range(100):
-            self.rng.shuffle(order)
+            self.rng.shuffle(movable_piece_ids)
+            for position, piece_id in zip(MOVABLE_POSITIONS, movable_piece_ids):
+                order[position] = piece_id
+            order[CENTER_INDEX] = CENTER_INDEX
             if order != SOLVED_ORDER:
                 return order.copy()
 
@@ -233,10 +437,10 @@ class TextJigsawEnv:
     def _compute_reward(self) -> tuple[float, dict]:
         correct_pairs = self._count_correct_pairs()
         correct_positions = sum(
-            piece_id == position for position, piece_id in enumerate(self.current_order)
+            self.current_order[position] == position for position in MOVABLE_POSITIONS
         )
         pairwise_reward = correct_pairs / 12.0
-        category_reward = correct_positions / float(PIECE_COUNT)
+        category_reward = correct_positions / float(len(MOVABLE_POSITIONS))
         solved = self.current_order == SOLVED_ORDER
         done_reward = self.done_reward_value if solved else 0.0
         reward = (
@@ -283,9 +487,13 @@ class TextJigsawEnv:
             raise ValueError(f"index2 out of range: {index2}")
         if index1 == index2:
             raise ValueError("index1 and index2 must be different")
+        if index1 == CENTER_INDEX or index2 == CENTER_INDEX:
+            raise ValueError(f"center position {CENTER_INDEX} is fixed and cannot be swapped")
 
     @staticmethod
     def _build_legal_action_mask() -> np.ndarray:
         mask = np.ones((PIECE_COUNT, PIECE_COUNT), dtype=bool)
         np.fill_diagonal(mask, False)
+        mask[CENTER_INDEX, :] = False
+        mask[:, CENTER_INDEX] = False
         return mask

@@ -1,389 +1,391 @@
-"""Multimodal model with independent image and text encoders.
-
-The model is intentionally encoder-agnostic: pass in any two ``nn.Module``
-encoders, and this wrapper will call them, normalize their output shape, project
-both modalities to a shared dimension, fuse them, and produce task logits.
-"""
-
-from __future__ import annotations
-
-from typing import Any, Dict, Mapping, Optional, Sequence, Union
-
+import torch.nn as nn
 import torch
-from torch import Tensor, nn
+from torchvision.models import efficientnet_b0,efficientnet_b3,efficientnet_v2_m
+import torch.nn.functional as F
+from typing import Dict
+
+class fen_model(nn.Module):
+    def __init__(self, hidden_size1, hidden_size2,feature_hidden=512,model_name="ef"):
+        super(fen_model, self).__init__()
+        self.feature_hidden=feature_hidden
+        if model_name=="ef":
+            self.hori_ef = efficientnet_b3(weights="DEFAULT")
+            self.hori_ef.classifier = nn.Linear(1536, feature_hidden)
+            self.vert_ef = efficientnet_b3(weights="DEFAULT")
+            self.vert_ef.classifier = nn.Linear(1536, feature_hidden)
+        elif model_name=="modulator":
+            self.hori_ef=Modulator(transformer_dim=feature_hidden,out=feature_hidden)
+            self.vert_ef=Modulator(transformer_dim=feature_hidden,out=feature_hidden)
+
+        self.contrast_fc_hori = nn.Linear(feature_hidden*2, hidden_size1)
+        self.contrast_fc_vert = nn.Linear(feature_hidden*2, hidden_size1)
+
+        self.fc1 = nn.Linear(hidden_size1*12, hidden_size1)
+        self.relu = nn.ReLU()
+        self.bn = nn.BatchNorm1d(hidden_size1)
+        self.do = nn.Dropout1d(p=0.1)
+        self.fc2 = nn.Linear(hidden_size1, hidden_size2)
+
+        # 定义 index 对
+        self.hori_set = [(i, i+1) for i in range(9) if i % 3 != 2]
+        self.vert_set = [(i, i+3) for i in range(6)]
+
+    def forward(self, image):
+        B, C, H, W = image.shape   # 假设输入 (B, 3, 288, 288)
+
+        # ---- 1. 切片并 reshape 成 batch ----
+        patches = image.unfold(2, 96, 96).unfold(3, 96, 96)
+        # patches: (B, C, 3, 3, 96, 96)
+        patches = patches.permute(0,2,3,1,4,5).contiguous()
+        patches = patches.view(B*9, C, 96, 96)   # (B*9, 3, 96, 96)
+
+        # ---- 2. 一次性送进 ef ----
+        hori_feats = self.hori_ef(patches)   # (B*9, 1024)
+        hori_feats = hori_feats.view(B, 9, self.feature_hidden)  # (B, 9, 1024)
+        vert_feats = self.vert_ef(patches)   # (B*9, 1024)
+        vert_feats = vert_feats.view(B, 9, self.feature_hidden)  # (B, 9, 1024)
+
+        # ---- 3. 构建横向对 ----
+        hori_pairs = torch.stack([torch.cat([hori_feats[:, i, :], hori_feats[:, j, :]], dim=-1) 
+                                  for (i,j) in self.hori_set], dim=1)  # (B, #pairs, 1024)
+        hori_feats = self.contrast_fc_hori(hori_pairs)  # (B, #pairs, 512)
+
+        # ---- 4. 构建纵向对 ----
+        vert_pairs = torch.stack([torch.cat([vert_feats[:, i, :], vert_feats[:, j, :]], dim=-1) 
+                                  for (i,j) in self.vert_set], dim=1)  # (B, #pairs, 1024)
+        vert_feats = self.contrast_fc_vert(vert_pairs)  # (B, #pairs, 512)
+
+        # ---- 5. 拼接所有特征 ----
+        feature_tensor = torch.cat([hori_feats, vert_feats], dim=1)  # (B, 12, 512)
+        feature_tensor = feature_tensor.view(B, -1)   # (B, 12*512)
+
+        # ---- 6. 全连接部分 ----
+        x = self.do(feature_tensor)
+        x = self.fc1(x)
+        x = self.do(x)
+        x = self.bn(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+
+        return x
 
 
-EncoderInputs = Union[Tensor, Sequence[Any], Mapping[str, Any]]
+class small_global_vit(nn.Module):
+    def __init__(self, d_model: int, num_layers: int = 2, num_heads: int = 4, dropout: float = 0.1) -> None:
+        super().__init__()
+        self.patch_embed = nn.Conv2d(3, d_model, kernel_size=96, stride=96)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=num_heads,
+            dim_feedforward=d_model * 2,
+            dropout=dropout,
+            batch_first=True,
+            activation="gelu",
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
+        self.position_embedding = nn.Parameter(torch.randn(1, 10, d_model) * 0.02)
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, board_images: torch.Tensor) -> torch.Tensor:
+        batch_size = board_images.size(0)
+        normalized = board_images.float() / 255.0
+        patch_tokens = self.patch_embed(normalized).flatten(2).transpose(1, 2)
+        cls_token = self.cls_token.expand(batch_size, -1, -1)
+        tokens = torch.cat([cls_token, patch_tokens], dim=1)
+        encoded = self.transformer(tokens + self.position_embedding)
+        return self.norm(encoded[:, 0])
 
 
-class BasicTransformerTextEncoder(nn.Module):
-    """A compact Transformer encoder for tokenized text.
-
-    The forward method follows the common HuggingFace-style input names so it
-    can be used with ``FenModel`` through a dict:
-
-    ``model(image_inputs, {"input_ids": ids, "attention_mask": mask})``
-    """
-
+class dualstem_fen_model(nn.Module):
     def __init__(
         self,
-        vocab_size: int,
-        embed_dim: int = 256,
-        num_heads: int = 8,
-        num_layers: int = 4,
-        dim_feedforward: int = 1024,
-        max_length: int = 512,
-        dropout: float = 0.1,
-        padding_idx: int = 0,
-        use_cls_token: bool = True,
+        hidden_size1: int,
+        hidden_size2: int,
+        feature_hidden: int = 512,
+        model_name: str = "ef",
+        vit_num_layers: int = 2,
+        vit_num_heads: int = 4,
+        vit_dropout: float = 0.1,
+        alpha_init: float = 1.0,
+        beta_init: float = 1.0,
     ) -> None:
         super().__init__()
-
-        if embed_dim % num_heads != 0:
-            raise ValueError("embed_dim must be divisible by num_heads")
-
-        self.output_dim = embed_dim
-        self.max_length = max_length
-        self.padding_idx = padding_idx
-        self.use_cls_token = use_cls_token
-
-        self.token_embedding = nn.Embedding(
-            vocab_size,
-            embed_dim,
-            padding_idx=padding_idx,
+        if model_name.startswith("dualstem_"):
+            raise ValueError("dualstem_fen_model local model_name should be a base backbone such as 'ef' or 'modulator'.")
+        self.local_fen = fen_model(
+            hidden_size1=hidden_size1,
+            hidden_size2=hidden_size2,
+            feature_hidden=feature_hidden,
+            model_name=model_name,
         )
-        position_count = max_length + (1 if use_cls_token else 0)
-        self.position_embedding = nn.Embedding(position_count, embed_dim)
-        self.cls_token = (
-            nn.Parameter(torch.zeros(1, 1, embed_dim)) if use_cls_token else None
+        self.global_fen = small_global_vit(
+            d_model=hidden_size2,
+            num_layers=vit_num_layers,
+            num_heads=vit_num_heads,
+            dropout=vit_dropout,
         )
-        self.embedding_norm = nn.LayerNorm(embed_dim)
-        self.embedding_dropout = nn.Dropout(dropout)
+        self.alpha = nn.Parameter(torch.tensor(alpha_init, dtype=torch.float32))
+        self.beta = nn.Parameter(torch.tensor(beta_init, dtype=torch.float32))
 
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
+        local_feature = self.local_fen(image)
+        global_feature = self.global_fen(image)
+        return self.alpha * local_feature + self.beta * global_feature
+
+class central_fen_model(nn.Module):
+    def __init__(self, hidden_size1,hidden_size2,dropout=0.1):
+        super().__init__()
+        self.ef=efficientnet_b0()
+        self.ef.classifier=nn.Linear(1280,hidden_size1)
+        self.contract_fc=nn.Linear(2*hidden_size1,hidden_size1)
+        self.fc1=nn.Linear(8*hidden_size1,hidden_size1)
+        self.relu=nn.ReLU()
+        self.bn=nn.BatchNorm1d(hidden_size1)
+
+        self.out_layer=nn.Sequential(
+            nn.Linear(hidden_size1,hidden_size2),
+            nn.Dropout(dropout),
+            nn.ReLU(),
+            nn.Linear(hidden_size2,hidden_size2)
+        )
+    
+    def forward(self, image):
+        # 输入: [batch, 3, 288, 288]
+        B, C, H, W = image.shape
+        # 切分为 9 个碎片 [B, 3, 3, 3, 96, 96]
+        patches = image.unfold(2, 96, 96).unfold(3, 96, 96)  # [B, C, 3, 3, 96, 96]
+        patches = patches.permute(0,2,3,1,4,5).contiguous()  # [B, 3, 3, C, 96, 96]
+        patches = patches.view(B*9, C, 96, 96)  # [B*9, 3, 96, 96]
+        # 送入 EfficientNet
+        patch_features = self.ef(patches)  # [B*9, hidden_size1]
+        patch_features = patch_features.view(B, 9, -1)  # [B, 9, hidden_size1]
+        # 中心碎片
+        central_tensor = patch_features[:, 4, :]  # [B, hidden_size1]
+        # 其他碎片
+        other_tensor = torch.cat([patch_features[:, :4, :], patch_features[:, 5:, :]], dim=1)  # [B, 8, hidden_size1]
+        # 中心碎片扩展为 [B, 8, hidden_size1]
+        central_expanded = central_tensor.unsqueeze(1).expand(-1, 8, -1)
+        # 拼接中心与其他碎片 [B, 8, 2*hidden_size1]
+        concat_tensor = torch.cat([central_expanded, other_tensor], dim=-1)
+        # contract_fc 并行处理
+        contracted = self.contract_fc(concat_tensor)  # [B, 8, hidden_size1]
+        # 展平成 [B, 8*hidden_size1]
+        feature_tensor = contracted.reshape(B, -1)
+        feature_tensor = self.fc1(feature_tensor)
+        feature_tensor = self.bn(feature_tensor)
+        feature_tensor = self.relu(feature_tensor)
+        out = self.out_layer(feature_tensor)
+        return out
+    
+class piece_style_fen(nn.Module):
+    def __init__(self,hidden1=1024,hidden2=512,color_dim=6,color_out=64,out=9):
+        super().__init__()
+        self.rgb_encoder=efficientnet_b3(weights="DEFAULT")
+        self.rgb_encoder.classifier=nn.Linear(1536,hidden1)
+        self.color_mlp = nn.Sequential(
+            nn.Linear(color_dim, color_out), nn.LayerNorm(color_out), nn.ReLU()
+        )
+        self.feature_dim = hidden1 + color_out
+
+        self.out_layer = nn.Sequential(
+            nn.Linear((self.feature_dim * 4 + 1)*12, hidden2),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.LayerNorm(hidden2),
+            nn.Linear(hidden2, out),
+        )
+
+        self.hori_set = [(i, i+1) for i in range(9) if i % 3 != 2]
+        self.vert_set = [(i, i+3) for i in range(6)]
+        self.register_buffer(
+            "hori_idx", torch.tensor(self.hori_set, dtype=torch.long)
+        )
+        self.register_buffer(
+            "vert_idx", torch.tensor(self.vert_set, dtype=torch.long)
+        )
+
+    def get_color_stats(self, tensor):
+        """计算均值和方差 [B, 6]"""
+        mean = tensor.mean(dim=[2, 3])
+        std = tensor.std(dim=[2, 3])
+        return torch.cat([mean, std], dim=1)
+    def encode(self, x):
+        # 提取 RGB 特征
+        f_rgb = self.rgb_encoder(x)
+        # 提取色彩特征
+        f_color = self.color_mlp(self.get_color_stats(x))
+        return torch.cat([f_rgb, f_color], dim=-1)
+
+    def forward(self, image):
+        B, C, H, W = image.shape  # (B, 3, 288, 288)
+
+        # ---- 1. 切 patch ----
+        patches = image.unfold(2, 96, 96).unfold(3, 96, 96)
+        patches = patches.permute(0, 2, 3, 1, 4, 5).contiguous()
+        patches = patches.view(B * 9, C, 96, 96)
+
+        # ---- 2. 编码 ----
+        feats = self.encode(patches)                 # (B*9, D)
+        feats = feats.view(B, 9, self.feature_dim)   # (B, 9, D)
+
+        # =========================
+        # 横向 pair（并行）
+        # =========================
+        hi, hj = self.hori_idx[:, 0], self.hori_idx[:, 1]  # (Nh,)
+
+        f1 = feats[:, hi, :]   # (B, Nh, D)
+        f2 = feats[:, hj, :]   # (B, Nh, D)
+
+        diff = torch.abs(f1 - f2)
+        prod = f1 * f2
+        cosine = F.cosine_similarity(f1, f2, dim=-1, eps=1e-8).unsqueeze(-1)
+
+        hori_feature = torch.cat([f1, f2, diff, prod, cosine], dim=-1)
+        # (B, Nh, 4D+1)
+
+        # =========================
+        # 纵向 pair（并行）
+        # =========================
+        vi, vj = self.vert_idx[:, 0], self.vert_idx[:, 1]  # (Nv,)
+
+        f1 = feats[:, vi, :]
+        f2 = feats[:, vj, :]
+
+        diff = torch.abs(f1 - f2)
+        prod = f1 * f2
+        cosine = F.cosine_similarity(f1, f2, dim=-1, eps=1e-8).unsqueeze(-1)
+
+        vert_feature = torch.cat([f1, f2, diff, prod, cosine], dim=-1)
+        # (B, Nv, 4D+1)
+
+        # =========================
+        # 拼接 & 输出
+        # =========================
+        hori_feature = hori_feature.flatten(1)  # (B, Nh*(4D+1))
+        vert_feature = vert_feature.flatten(1)  # (B, Nv*(4D+1))
+
+        final_feature = torch.cat([hori_feature, vert_feature], dim=-1)
+
+        out = self.out_layer(final_feature)
+        return out
+
+
+
+class FeatureMLP(nn.Module):
+
+    def __init__(self, input_dim, output_dim=256):
+        super().__init__()
+        self.proj = nn.Linear(input_dim, output_dim)
+
+    def forward(self, hidden_states: torch.Tensor):
+        hidden_states = hidden_states.flatten(2).transpose(1, 2)
+        hidden_states = self.proj(hidden_states)
+        return hidden_states
+
+class Modulator(nn.Module):
+    def __init__(
+        self,
+        transformer_dim,
+        out,
+        hidden_sizes=[128, 256, 512, 1024,1280],
+    ):
+        super().__init__()
+
+        self.mlp1 = FeatureMLP(
+            input_dim=hidden_sizes[-1], output_dim=transformer_dim
+        ) 
+
+        self.gmp_branch = nn.Sequential(
+            nn.AdaptiveMaxPool2d(1),
+            # nn.Conv2d(transformer_dim // 2, transformer_dim // 2, kernel_size=1),
+            nn.Conv2d(transformer_dim, transformer_dim//2, kernel_size=1),
+        )
+        self.gap_branch = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            # nn.Conv2d(transformer_dim // 2, transformer_dim // 2, kernel_size=1),
+            nn.Conv2d(transformer_dim , transformer_dim//2, kernel_size=1),
+        )
+        self.mlp2 = nn.Sequential(
+            nn.Linear(transformer_dim, transformer_dim * 2),
+            nn.ReLU(),
+            nn.Linear(transformer_dim * 2,out),
+        )
+
+        self.fen=efficientnet_b0(pretrained=True).features
+        self.reverse_conv=nn.ConvTranspose2d(1280,1280,5)
+
+    def forward(self, x: torch.Tensor):
+        x=self.fen(x)
+        x=self.reverse_conv(x)
+        bs, c, h, w = x.shape
+        # print(f"Feature size: {bs,c,h,w}")
+        x = self.mlp1(x) 
+        x = x.permute(0, 2, 1).reshape(bs, -1, h, w)
+
+        
+
+        max_channel_attention = self.gmp_branch(x)
+        avg_channel_attention = self.gap_branch(x)
+
+        concated_channel_attention = torch.cat(
+            [max_channel_attention, avg_channel_attention], dim=1
+        ) 
+
+        flatten_channel_attention = concated_channel_attention.flatten(
+            1
+        )
+        fused_channel_attention = self.mlp2(
+            flatten_channel_attention
+        )
+
+
+        return fused_channel_attention
+    
+class attention_fen_model(nn.Module):
+    def __init__(self, embed_dim: int, num_layers: int = 3, num_heads: int = 4, dropout: float = 0.1,single_output=False, project_hidden: int = 256) -> None:
+        super().__init__()
+        self.patch_encoder = efficientnet_b0(weights="DEFAULT")
+        self.patch_encoder.classifier = nn.Linear(1280, embed_dim)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim,
             nhead=num_heads,
-            dim_feedforward=dim_feedforward,
+            dim_feedforward=embed_dim * 2,
             dropout=dropout,
-            activation="gelu",
             batch_first=True,
-            norm_first=True,
+            activation="gelu",
         )
-        self.encoder = nn.TransformerEncoder(
-            encoder_layer,
-            num_layers=num_layers,
-        )
-        self.output_norm = nn.LayerNorm(embed_dim)
-        self.pooler = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim),
-            nn.Tanh(),
-        )
-
-        self._reset_parameters()
-
-    def forward(
-        self,
-        input_ids: Tensor,
-        attention_mask: Optional[Tensor] = None,
-        key_padding_mask: Optional[Tensor] = None,
-    ) -> Dict[str, Tensor]:
-        """Encode token ids.
-
-        Args:
-            input_ids: Long tensor with shape ``[batch, seq_len]``.
-            attention_mask: Optional mask with 1/True for valid tokens and
-                0/False for padding.
-            key_padding_mask: Optional PyTorch-style mask with True for padding.
-                If provided, it takes precedence over ``attention_mask``.
-        """
-
-        if input_ids.ndim != 2:
-            raise ValueError(
-                f"input_ids must have shape [batch, seq_len], got {input_ids.shape}"
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.position_embedding = nn.Parameter(torch.randn(1, 9, embed_dim) * 0.02)
+        self.summary_norm = nn.LayerNorm(embed_dim)
+        self.single_output=single_output
+        self.project_hidden=project_hidden
+        if single_output:
+            self.output_layer=nn.Sequential(
+                nn.Linear(embed_dim, project_hidden*2),
+                nn.ReLU(),
+                nn.Linear(project_hidden*2, project_hidden)
             )
 
-        batch_size, seq_len = input_ids.shape
-        extra_token_count = 1 if self.use_cls_token else 0
-        total_length = seq_len + extra_token_count
-        max_total_length = self.max_length + extra_token_count
-        if total_length > max_total_length:
-            raise ValueError(
-                f"Sequence length {seq_len} exceeds max_length={self.max_length}"
-            )
+    def _encode_patches(self, patches: torch.Tensor) -> torch.Tensor:
+        normalized = patches.float() / 255.0
+        return self.patch_encoder(normalized)
 
-        hidden = self.token_embedding(input_ids)
-
-        if self.use_cls_token:
-            assert self.cls_token is not None
-            cls_token = self.cls_token.expand(batch_size, -1, -1)
-            hidden = torch.cat([cls_token, hidden], dim=1)
-
-        positions = torch.arange(total_length, device=input_ids.device)
-        positions = positions.unsqueeze(0).expand(batch_size, -1)
-        hidden = hidden + self.position_embedding(positions)
-        hidden = self.embedding_norm(hidden)
-        hidden = self.embedding_dropout(hidden)
-
-        padding_mask = self._build_padding_mask(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            key_padding_mask=key_padding_mask,
-        )
-        hidden = self.encoder(hidden, src_key_padding_mask=padding_mask)
-        hidden = self.output_norm(hidden)
-
-        if self.use_cls_token:
-            pooled = hidden[:, 0]
+    def forward(self, board_images: torch.Tensor) -> Dict[str, torch.Tensor]:
+        batch_size, channels, _, _ = board_images.shape
+        patches = board_images.unfold(2, 96, 96).unfold(3, 96, 96)
+        patches = patches.permute(0, 2, 3, 1, 4, 5).contiguous().view(batch_size * 9, channels, 96, 96)
+        patch_embeddings = self._encode_patches(patches).view(batch_size, 9, -1)
+        encoded = self.transformer(patch_embeddings + self.position_embedding)
+        slot_context = torch.cat([encoded[:, :4], encoded[:, 5:]], dim=1)
+        board_summary = self.summary_norm(encoded.mean(dim=1))
+        if self.single_output:
+            b=board_summary.size(0)
+            board_summary = self.output_layer(board_summary)
+            return board_summary.view(b,-1)
         else:
-            pooled = self._masked_mean_pool(hidden, padding_mask)
-
-        return {
-            "last_hidden_state": hidden,
-            "pooler_output": self.pooler(pooled),
-        }
-
-    def _build_padding_mask(
-        self,
-        input_ids: Tensor,
-        attention_mask: Optional[Tensor],
-        key_padding_mask: Optional[Tensor],
-    ) -> Tensor:
-        if key_padding_mask is not None:
-            padding_mask = key_padding_mask.bool()
-        elif attention_mask is not None:
-            padding_mask = ~attention_mask.bool()
-        else:
-            padding_mask = input_ids.eq(self.padding_idx)
-
-        if self.use_cls_token:
-            cls_padding = torch.zeros(
-                padding_mask.size(0),
-                1,
-                dtype=torch.bool,
-                device=padding_mask.device,
-            )
-            padding_mask = torch.cat([cls_padding, padding_mask], dim=1)
-
-        return padding_mask
-
-    @staticmethod
-    def _masked_mean_pool(hidden: Tensor, padding_mask: Tensor) -> Tensor:
-        valid_mask = ~padding_mask
-        weights = valid_mask.unsqueeze(-1).type_as(hidden)
-        summed = (hidden * weights).sum(dim=1)
-        counts = weights.sum(dim=1).clamp_min(1.0)
-        return summed / counts
-
-    def _reset_parameters(self) -> None:
-        if self.cls_token is not None:
-            nn.init.normal_(self.cls_token, mean=0.0, std=0.02)
-        nn.init.normal_(self.position_embedding.weight, mean=0.0, std=0.02)
-
-
-class MultimodalFenModel(nn.Module):
-    """Two-branch multimodal model for image and text features.
-
-    Args:
-        image_encoder: Module that encodes image inputs.
-        text_encoder: Module that encodes text inputs.
-        image_feature_dim: Feature size produced by ``image_encoder``.
-        text_feature_dim: Feature size produced by ``text_encoder``.
-        num_outputs: Output dimension, for example class count or regression
-            target count.
-        hidden_dim: Shared feature dimension after modality projection.
-        fusion: Fusion strategy. Supports ``"concat"``, ``"sum"``, and
-            ``"gated"``.
-        dropout: Dropout probability used in projection/fusion heads.
-        freeze_image_encoder: If true, image encoder parameters are frozen.
-        freeze_text_encoder: If true, text encoder parameters are frozen.
-    """
-
-    def __init__(
-        self,
-        image_encoder: nn.Module,
-        text_encoder: nn.Module,
-        image_feature_dim: int,
-        text_feature_dim: int,
-        num_outputs: int,
-        hidden_dim: int = 256,
-        fusion: str = "concat",
-        dropout: float = 0.1,
-        freeze_image_encoder: bool = False,
-        freeze_text_encoder: bool = False,
-    ) -> None:
-        super().__init__()
-
-        if fusion not in {"concat", "sum", "gated"}:
-            raise ValueError("fusion must be one of: 'concat', 'sum', 'gated'")
-
-        self.image_encoder = image_encoder
-        self.text_encoder = text_encoder
-        self.fusion = fusion
-
-        if freeze_image_encoder:
-            self._set_requires_grad(self.image_encoder, False)
-        if freeze_text_encoder:
-            self._set_requires_grad(self.text_encoder, False)
-
-        self.image_projection = self._projection_block(
-            image_feature_dim, hidden_dim, dropout
-        )
-        self.text_projection = self._projection_block(
-            text_feature_dim, hidden_dim, dropout
-        )
-
-        if fusion == "concat":
-            fused_dim = hidden_dim * 2
-            self.gate = None
-        elif fusion == "gated":
-            fused_dim = hidden_dim
-            self.gate = nn.Sequential(
-                nn.Linear(hidden_dim * 2, hidden_dim),
-                nn.Sigmoid(),
-            )
-        else:
-            fused_dim = hidden_dim
-            self.gate = None
-
-        self.classifier = nn.Sequential(
-            nn.LayerNorm(fused_dim),
-            nn.Dropout(dropout),
-            nn.Linear(fused_dim, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, num_outputs),
-        )
-
-    def forward(
-        self,
-        image_inputs: EncoderInputs,
-        text_inputs: EncoderInputs,
-        return_features: bool = False,
-    ) -> Union[Tensor, Dict[str, Tensor]]:
-        """Run both encoders and return logits.
-
-        ``image_inputs`` and ``text_inputs`` can each be:
-        - a Tensor, called as ``encoder(inputs)``;
-        - a tuple/list, called as ``encoder(*inputs)``;
-        - a dict, called as ``encoder(**inputs)``.
-        """
-
-        image_features = self._extract_features(
-            self._call_encoder(self.image_encoder, image_inputs)
-        )
-        text_features = self._extract_features(
-            self._call_encoder(self.text_encoder, text_inputs)
-        )
-
-        image_embedding = self.image_projection(image_features)
-        text_embedding = self.text_projection(text_features)
-        fused = self._fuse(image_embedding, text_embedding)
-        logits = self.classifier(fused)
-
-        if not return_features:
-            return logits
-
-        return {
-            "logits": logits,
-            "image_features": image_features,
-            "text_features": text_features,
-            "image_embedding": image_embedding,
-            "text_embedding": text_embedding,
-            "fused_embedding": fused,
-        }
-
-    def _fuse(self, image_embedding: Tensor, text_embedding: Tensor) -> Tensor:
-        if self.fusion == "concat":
-            return torch.cat([image_embedding, text_embedding], dim=-1)
-
-        if self.fusion == "sum":
-            return image_embedding + text_embedding
-
-        assert self.gate is not None
-        gate = self.gate(torch.cat([image_embedding, text_embedding], dim=-1))
-        return gate * image_embedding + (1.0 - gate) * text_embedding
-
-    @staticmethod
-    def _projection_block(
-        input_dim: int,
-        output_dim: int,
-        dropout: float,
-    ) -> nn.Sequential:
-        return nn.Sequential(
-            nn.LayerNorm(input_dim),
-            nn.Linear(input_dim, output_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.LayerNorm(output_dim),
-        )
-
-    @staticmethod
-    def _call_encoder(encoder: nn.Module, inputs: EncoderInputs) -> Any:
-        if isinstance(inputs, Mapping):
-            return encoder(**inputs)
-        if isinstance(inputs, (tuple, list)):
-            return encoder(*inputs)
-        return encoder(inputs)
-
-    @staticmethod
-    def _extract_features(encoder_output: Any) -> Tensor:
-        """Convert common encoder outputs into a 2D ``[batch, feature]`` tensor."""
-
-        if isinstance(encoder_output, Tensor):
-            features = encoder_output
-        elif isinstance(encoder_output, Mapping):
-            features = MultimodalFenModel._extract_from_mapping(encoder_output)
-        elif hasattr(encoder_output, "pooler_output"):
-            features = encoder_output.pooler_output
-        elif hasattr(encoder_output, "last_hidden_state"):
-            features = encoder_output.last_hidden_state[:, 0]
-        elif isinstance(encoder_output, (tuple, list)) and encoder_output:
-            features = encoder_output[0]
-        else:
-            raise TypeError(
-                "Encoder output must be a Tensor, non-empty tuple/list, mapping, "
-                "or object with pooler_output/last_hidden_state."
-            )
-
-        if not isinstance(features, Tensor):
-            raise TypeError("Extracted encoder features must be a torch.Tensor.")
-
-        if features.ndim == 4:
-            features = features.mean(dim=(-2, -1))
-        elif features.ndim == 3:
-            features = features[:, 0]
-        elif features.ndim > 4:
-            features = features.flatten(start_dim=1)
-
-        if features.ndim != 2:
-            raise ValueError(
-                "Encoder features must be reducible to shape [batch, feature], "
-                f"got {tuple(features.shape)}."
-            )
-
-        return features
-
-    @staticmethod
-    def _extract_from_mapping(encoder_output: Mapping[str, Any]) -> Tensor:
-        for key in ("pooler_output", "features", "embedding", "embeddings", "logits"):
-            value = encoder_output.get(key)
-            if isinstance(value, Tensor):
-                return value
-
-        last_hidden_state = encoder_output.get("last_hidden_state")
-        if isinstance(last_hidden_state, Tensor):
-            return last_hidden_state[:, 0]
-
-        raise KeyError(
-            "Mapping encoder output must contain one of: pooler_output, features, "
-            "embedding, embeddings, logits, last_hidden_state."
-        )
-
-    @staticmethod
-    def _set_requires_grad(module: nn.Module, requires_grad: bool) -> None:
-        for parameter in module.parameters():
-            parameter.requires_grad = requires_grad
-
-
-# Backward-friendly alias for shorter imports.
-FenModel = MultimodalFenModel
+            return {
+                "token_context": encoded,
+                "slot_context": slot_context,
+                "board_summary": board_summary,
+            }
