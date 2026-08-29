@@ -1,0 +1,190 @@
+{
+  "dataset_type": "IterableDatasetDict",
+  "splits": {
+    "train": {
+      "type": "IterableDataset",
+      "features": {
+        "image_path": {
+          "dtype": "string",
+          "_type": "Value"
+        },
+        "frames": {
+          "feature": {
+            "bbox": {
+              "feature": {
+                "dtype": "int64",
+                "_type": "Value"
+              },
+              "_type": "List"
+            },
+            "caption": {
+              "dtype": "string",
+              "_type": "Value"
+            },
+            "characters": {
+              "feature": {
+                "bbox": {
+                  "feature": {
+                    "dtype": "int64",
+                    "_type": "Value"
+                  },
+                  "_type": "List"
+                },
+                "id": {
+                  "dtype": "string",
+                  "_type": "Value"
+                },
+                "type": {
+                  "dtype": "int64",
+                  "_type": "Value"
+                }
+              },
+              "_type": "List"
+            },
+            "dialogs": {
+              "feature": {
+                "bbox": {
+                  "feature": {
+                    "dtype": "int64",
+                    "_type": "Value"
+                  },
+                  "_type": "List"
+                }
+              },
+              "_type": "List"
+            }
+          },
+          "_type": "List"
+        },
+        "meta": {
+          "url1": {
+            "dtype": "string",
+            "_type": "Value"
+          },
+          "url2": {
+            "dtype": "string",
+            "_type": "Value"
+          },
+          "width1": {
+            "dtype": "int64",
+            "_type": "Value"
+          },
+          "width2": {
+            "dtype": "int64",
+            "_type": "Value"
+          }
+        }
+      },
+      "columns": [
+        "image_path",
+        "frames",
+        "meta"
+      ],
+      "num_rows": null,
+      "examples": [
+        {
+          "index": 0,
+          "summary": {
+            "image_path": "20th-century-boys/000.jpg",
+            "frames": {
+              "type": "list",
+              "length": 7,
+              "items": [
+                {
+                  "bbox": {
+                    "type": "list",
+                    "length": 4,
+                    "items": [
+                      "755",
+                      "35",
+                      "1451"
+                    ],
+                    "truncated": true
+                  },
+                  "caption": "A large, multi-story building with many windows and balconies stands on a street corner. The year \"1973\" is prominently displayed in the top right corner.",
+                  "characters": {
+                    "type": "list",
+                    "length": 0,
+                    "items": [],
+                    "truncated": false
+                  },
+                  "dialogs": {
+                    "type": "list",
+                    "length": 2,
+                    "items": [
+                      "{'bbox': [1360, 98, 1412, 127]}",
+                      "{'bbox': [797, 158, 892, 248]}"
+                    ],
+                    "truncated": false
+                  }
+                },
+                {
+                  "bbox": {
+                    "type": "list",
+                    "length": 4,
+                    "items": [
+                      "1221",
+                      "488",
+                      "1450"
+                    ],
+                    "truncated": true
+                  },
+                  "caption": "A young boy with black hair is enjoying a meal. He's using chopsticks to pick up a piece of food from a box. His eyes are closed in delight, and he's smiling br...<truncated>",
+                  "characters": {
+                    "type": "list",
+                    "length": 1,
+                    "items": [
+                      "{'bbox': [1222, 494, 1450, 725], 'id': '5', 'type': 0}"
+                    ],
+                    "truncated": false
+                  },
+                  "dialogs": {
+                    "type": "list",
+                    "length": 0,
+                    "items": [],
+                    "truncated": false
+                  }
+                },
+                {
+                  "bbox": {
+                    "type": "list",
+                    "length": 4,
+                    "items": [
+                      "1002",
+                      "485",
+                      "1213"
+                    ],
+                    "truncated": true
+                  },
+                  "caption": "Two young girls are enjoying a meal together. One girl is wearing a white shirt with a bow tie, while the other is in a light-colored blouse. They are both smil...<truncated>",
+                  "characters": {
+                    "type": "list",
+                    "length": 2,
+                    "items": [
+                      "{'bbox': [1004, 547, 1128, 724], 'id': '3', 'type': 0}",
+                      "{'bbox': [1119, 495, 1214, 725], 'id': '4', 'type': 0}"
+                    ],
+                    "truncated": false
+                  },
+                  "dialogs": {
+                    "type": "list",
+                    "length": 0,
+                    "items": [],
+                    "truncated": false
+                  }
+                }
+              ],
+              "truncated": true
+            },
+            "meta": {
+              "url1": "https://cmdxd98sb0x3yprd.mangadex.network/data/31d30cdaf58792d7c934fb2b6fff4fe9/x5-3d27cdf1e78d363ee5a609824aeef9f4adcfcd4d9f979cabf58086ad3fc5c742.jpg",
+              "url2": "https://cmdxd98sb0x3yprd.mangadex.network/data/31d30cdaf58792d7c934fb2b6fff4fe9/x6-af9ce37ff4bf6656b70bb27f96f4ba64735fb3c20a875c93770a2afc02fa7260.jpg",
+              "width1": 754,
+              "width2": 711
+            }
+          }
+        }
+      ]
+    }
+  }
+}

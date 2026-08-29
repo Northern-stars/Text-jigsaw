@@ -6,3 +6,10 @@ Data/RawData
 output/*
 sample/*
 Solver/checkpoints/*
+Raw_output/*
+Mangazero/cache/*
+Mangazero/output/*
+Mangazero/raw/*
+Mangazero/ordering_dataset
+Data/*
+Solver/checkpoints*
