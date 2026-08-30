@@ -11,5 +11,7 @@ Mangazero/cache/*
 Mangazero/output/*
 Mangazero/raw/*
 Mangazero/ordering_dataset
+Mangazero/4panel_dataset
 Data/*
 Solver/checkpoints*
+.venv

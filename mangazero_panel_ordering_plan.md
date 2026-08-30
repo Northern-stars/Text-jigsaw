@@ -515,6 +515,65 @@ multimodal: 使用 panel image + dialog_text
 --use-layout: 额外加入 layout_features
 ```
 
+### 模型如何输出排序
+
+模型不是直接输出一个排序数组，而是逐步输出“下一个应该选哪个 panel”。
+
+核心过程是：
+
+1. 先把一个 puzzle 里的 `K` 个 panel 编成 `K` 个向量。
+2. 再把这 `K` 个向量送进 set encoder，得到一组上下文化后的 `memory`。
+3. pointer decoder 每一步读取“已经选过的历史”，然后对 `K` 个候选 panel 各打一个分数。
+4. 分数最高的 panel id 就是当前步的输出。
+5. 重复 `K` 次，就得到完整排序。
+
+更具体一点：
+
+- `encode(...)` 先对每个 panel 做视觉编码、文本编码或两者融合，再加上 layout 特征，最后经过 `TransformerEncoder`。
+- 训练时 `forward(...)` 会使用 teacher forcing：
+  - 先用 `target_order[:, :-1]` 构造 decoder 输入。
+  - decoder 的第 `t` 步看到的是前面 `t` 个“正确 panel”。
+  - `pointer_logits` 会给每个候选 panel 计算一个分数矩阵，shape 近似是 `[B, K, K]`。
+  - 其中 `logits[b, t, j]` 表示第 `b` 个样本在第 `t` 步选择第 `j` 个输入 panel 的倾向。
+  - 训练目标是让 `logits[b, t]` 在第 `t` 步对应真实的 `target_order[b, t]`。
+- 推理时 `greedy_decode(...)` 会自己一步步生成：
+  - 先输入 BOS。
+  - 每轮把已经选中的 panel 作为历史输入。
+  - decoder 输出当前步 logits。
+  - 把已经选过的 panel mask 掉。
+  - `argmax` 选出下一个 panel index。
+  - 把它追加到已选序列里。
+
+所以最终输出的 `target_order` 本质上就是：
+
+```text
+[第 1 步选中的 panel index, 第 2 步选中的 panel index, ..., 第 K 步选中的 panel index]
+```
+
+例如输入乱序 panel 是：
+
+```text
+[p3, p0, p5, p1, p4, p2]
+```
+
+模型如果输出：
+
+```text
+[1, 3, 5, 0, 4, 2]
+```
+
+意思就是：
+
+```text
+先选 p0，再选 p1，再选 p2，再选 p3，再选 p4，再选 p5
+```
+
+训练里用的是 `pointer_cross_entropy`，也就是对每一步的 panel 指针分类做交叉熵；评估时除了 loss，还会看：
+
+- `exact_match`：整条排序是否完全正确
+- `position_accuracy`：每个位置是否选对
+- `pairwise_accuracy`：任意两块 panel 的相对先后是否正确
+
 ## 训练脚本
 
 实现文件：
@@ -528,6 +587,7 @@ Solver/train_mangazero_panel_ordering.py
 - 监督学习。
 - teacher forcing。
 - pointer cross entropy。
+- 训练时先按 `target_order` 复原每个 puzzle 的正确 panel 顺序，再在程序内随机打乱一次后送入 solver。
 - validation 使用 greedy decode。
 - 训练开始时对完整 puzzle 数据按 `--split-ratio` 切分为 train/val/test。
 - 每个 epoch 结束后自动跑 validation。

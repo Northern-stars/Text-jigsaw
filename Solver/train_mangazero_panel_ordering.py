@@ -26,7 +26,7 @@ except ImportError:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train MangaZero panel-ordering set-to-sequence solver.")
-    parser.add_argument("--dataset-dir", type=Path, default=Path("Data/Mangazero/ordering_dataset"))
+    parser.add_argument("--dataset-dir", type=Path, default=Path("Mangazero/ordering_dataset"))
     parser.add_argument("--solver-type", default="visual", choices=("visual", "text", "multimodal"))
     parser.add_argument("--epoch", type=int, default=10, help="Total number of training epochs.")
     parser.add_argument("--epochs", type=int, default=None, help="Alias of --epoch.")
@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--panel-count", type=int, default=6)
     parser.add_argument("--image-width", type=int, default=224)
     parser.add_argument("--image-height", type=int, default=224)
-    parser.add_argument("--image-feature-dim", type=int, default=256)
+    parser.add_argument("--image-feature-dim", type=int, default=512)
     parser.add_argument("--vit-backbone", default="pretrained", choices=("pretrained", "lightweight"))
     parser.add_argument("--vit-pretrained", action="store_true", default=True)
     parser.add_argument("--no-vit-pretrained", action="store_false", dest="vit_pretrained")
@@ -49,16 +49,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vit-num-heads", type=int, default=8)
     parser.add_argument("--text-feature-dim", type=int, default=256)
     parser.add_argument("--text-vocab-size", type=int, default=8192)
-    parser.add_argument("--d-model", type=int, default=256)
+    parser.add_argument("--d-model", type=int, default=512)
     parser.add_argument("--encoder-layers", type=int, default=4)
-    parser.add_argument("--decoder-layers", type=int, default=2)
+    parser.add_argument("--decoder-layers", type=int, default=4)
     parser.add_argument("--num-heads", type=int, default=8)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--use-layout", action="store_true")
     parser.add_argument("--grad-clip-norm", type=float, default=1.0)
     parser.add_argument("--save-dir", type=Path, default=Path("Solver/checkpoints_mangazero"))
     parser.add_argument("--load", type=Path, default=None, help="Checkpoint path to resume from.")
-    parser.add_argument("--save-every", type=int, default=1)
+    parser.add_argument("--save-every", type=int, default=25)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args()
@@ -214,6 +214,7 @@ def train_one_epoch(
     losses = []
     progress = tqdm(loader, desc=f"train epoch {epoch}", dynamic_ncols=True) if tqdm is not None else loader
     for batch in progress:
+        batch = randomize_training_batch(batch, use_layout)
         batch = move_batch(batch, device, use_layout)
         logits = model(
             batch["panel_images"],
@@ -279,6 +280,53 @@ def move_batch(batch: dict[str, Any], device: torch.device, use_layout: bool) ->
     if use_layout and "layout_features" in batch:
         moved["layout_features"] = batch["layout_features"].to(device)
     return moved
+
+
+def randomize_training_batch(batch: dict[str, Any], use_layout: bool) -> dict[str, Any]:
+    """Restore canonical panel order from labels, then shuffle again online."""
+    if "panel_images" not in batch or "target_order" not in batch:
+        return batch
+
+    moved = dict(batch)
+    panel_images = batch["panel_images"]
+    target_order = batch["target_order"].long()
+    batch_size, panel_count = target_order.shape
+
+    canonical_images = gather_batch_by_order(panel_images, target_order)
+    permutation = torch.stack([torch.randperm(panel_count) for _ in range(batch_size)], dim=0)
+    moved["panel_images"] = gather_batch_by_order(canonical_images, permutation)
+    moved["target_order"] = torch.argsort(permutation, dim=1)
+
+    if use_layout and "layout_features" in batch:
+        moved["layout_features"] = gather_batch_by_order(batch["layout_features"], target_order)
+        moved["layout_features"] = gather_batch_by_order(moved["layout_features"], permutation)
+
+    if "dialog_texts" in batch:
+        canonical_dialog_texts = reorder_nested_list(batch["dialog_texts"], target_order)
+        moved["dialog_texts"] = reorder_nested_list(canonical_dialog_texts, permutation)
+
+    if "panels" in batch:
+        canonical_panels = reorder_nested_list(batch["panels"], target_order)
+        moved["panels"] = reorder_nested_list(canonical_panels, permutation)
+
+    return moved
+
+
+def gather_batch_by_order(tensor: torch.Tensor, order: torch.Tensor) -> torch.Tensor:
+    if tensor.ndim < 2:
+        raise ValueError(f"Expected batched tensor with at least 2 dims, got shape {tuple(tensor.shape)}")
+    index = order
+    for _ in range(tensor.ndim - 2):
+        index = index.unsqueeze(-1)
+    index = index.expand(*order.shape, *tensor.shape[2:])
+    return tensor.gather(1, index)
+
+
+def reorder_nested_list(items: list[Any], order: torch.Tensor) -> list[list[Any]]:
+    reordered: list[list[Any]] = []
+    for sample_items, sample_order in zip(items, order.tolist()):
+        reordered.append([sample_items[index] for index in sample_order])
+    return reordered
 
 
 def ordering_metrics(pred: torch.Tensor, target: torch.Tensor) -> dict[str, float]:

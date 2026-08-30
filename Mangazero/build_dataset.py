@@ -1,7 +1,6 @@
 """Build MangaZero ordering puzzles from locally downloaded raw samples."""
 
 from __future__ import annotations
-import torch
 import argparse
 import hashlib
 import io
@@ -71,8 +70,8 @@ class NetworkImageError(RuntimeError):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build MangaZero puzzles from raw local samples.")
-    parser.add_argument("--raw-dir", type=Path, default=Path("Data/Mangazero/raw"))
-    parser.add_argument("--output-dir", type=Path, default=Path("Data/Mangazero/ordering_dataset"))
+    parser.add_argument("--raw-dir", type=Path, default=Path("Mangazero/raw"))
+    parser.add_argument("--output-dir", type=Path, default=Path("Mangazero/ordering_dataset"))
     parser.add_argument("--panel-count", type=int, default=6)
     parser.add_argument("--stride", type=int, default=3)
     parser.add_argument("--shuffle-per-window", type=int, default=1)
