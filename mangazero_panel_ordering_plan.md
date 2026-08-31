@@ -135,6 +135,21 @@ python Solver/train_mangazero_panel_ordering.py --dataset-dir Data/Mangazero/ord
 python Solver/train_mangazero_panel_ordering.py --dataset-dir Data/Mangazero/ordering_dataset --solver-type visual --panel-count 6 --epoch 20 --load Solver/checkpoints_mangazero/last.pt
 ```
 
+单独测试 checkpoint：
+
+```bash
+python Solver/test_mangazero_panel_ordering.py --dataset-dir Data/Mangazero/ordering_dataset --panel-count 6 --checkpoint Solver/checkpoints_mangazero/best.pt --split test --seed 0
+```
+
+测试训练集或验证集：
+
+```bash
+python Solver/test_mangazero_panel_ordering.py --dataset-dir Data/Mangazero/ordering_dataset --panel-count 6 --checkpoint Solver/checkpoints_mangazero/best.pt --split train --seed 0
+python Solver/test_mangazero_panel_ordering.py --dataset-dir Data/Mangazero/ordering_dataset --panel-count 6 --checkpoint Solver/checkpoints_mangazero/best.pt --split valid --seed 0
+```
+
+注意：`--seed` 和 `--split-ratio` 必须与训练时一致，否则 train/valid/test 的样本划分会变化。
+
 checkpoint 默认保存到：
 
 ```text
@@ -178,6 +193,19 @@ Solver/checkpoints_mangazero/
 - `--device`：训练设备，默认自动选择 `cuda` 或 `cpu`。
 - `--seed`：训练随机种子。
 
+单独测试参数：
+
+- `--dataset-dir`：读取的数据集目录。
+- `--panel-count`：每个样本的 panel 数，必须和训练 checkpoint 一致。
+- `--checkpoint`：要测试的 checkpoint 路径，如 `best.pt` 或 `last.pt`。
+- `--split`：要测试的 split，可选 `train`、`valid`、`val`、`test`。
+- `--seed`：split 随机种子，必须和训练时一致。
+- `--split-ratio`：split 比例；不传时优先使用 checkpoint 中保存的训练配置，否则默认 `0.8,0.1,0.1`。
+- `--batch-size`：测试 batch size；不传时优先使用 checkpoint 配置。
+- `--num-workers`：DataLoader worker 数；不传时优先使用 checkpoint 配置。
+- `--device`：测试设备，默认自动选择 `cuda` 或 `cpu`。
+- `--output-json`：可选，将测试指标保存为 JSON 文件。
+
 ## 当前实现文件
 
 ```text
@@ -186,6 +214,7 @@ Data/Mangazero/build_dataset.py
 Solver/env/mangazero_panel_env.py
 Solver/agent/mangazero_set2seq_solver.py
 Solver/train_mangazero_panel_ordering.py
+Solver/test_mangazero_panel_ordering.py
 ```
 
 ## Pipeline
