@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     device = torch.device(args.device)
-    checkpoint = torch.load(args.checkpoint, map_location=device)
+    checkpoint = load_checkpoint_file(args.checkpoint, device)
     config = checkpoint.get("config", {})
     if not isinstance(config, dict):
         config = {}
@@ -103,6 +103,16 @@ def main() -> None:
                 ensure_ascii=False,
                 indent=2,
             )
+
+
+def load_checkpoint_file(path: Path, device: torch.device) -> dict[str, Any]:
+    try:
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(path, map_location=device)
+    if not isinstance(checkpoint, dict):
+        raise ValueError(f"Checkpoint must be a dict, got {type(checkpoint).__name__}")
+    return checkpoint
 
 
 def build_model(panel_count: int, config: dict[str, Any], use_layout: bool) -> MangaZeroSetToSequenceSolver:
