@@ -15,3 +15,4 @@ Mangazero/4panel_dataset
 Data/*
 Solver/checkpoints*
 .venv
+*.pyc
