@@ -37,10 +37,13 @@ Text-jigsaw/
 │   ├── train_mangazero_permutation_classifier.py # 分类器训练入口
 │   ├── test_*.py                  # 对应冒烟/单元测试
 │   └── visualize_dataset_sample.py # 数据集样本可视化
-├── mangazero_panel_ordering_plan.md # MangaZero 排序方案
-├── Solver/RL_REQUIREMENTS.md       # 3x3 RL 需求文档
-├── Solver/AGENT_DESIGN.md          # Solver agent 设计
-└── Solver/RL_PIPELINE.md           # RL 完整 pipeline 文档
+├── docs/                            # 技术文档
+│   ├── mangazero_panel_ordering_plan.md # MangaZero 排序方案
+│   ├── RL_REQUIREMENTS.md           # 3x3 RL 需求文档
+│   ├── AGENT_DESIGN.md              # Solver agent 设计
+│   ├── RL_PIPELINE.md               # RL 完整 pipeline 文档
+│   ├── qwen_vl_solver_spec.md       # Qwen VL 全排列分类方案
+│   └── qwen_vl_autoregressive_solver_spec.md # Qwen VL 自回归排序方案
 ```
 
 ## 数据集
@@ -60,7 +63,7 @@ Text-jigsaw/
 
 ## 使用提示
 
-数据生成与训练脚本均带 `argparse` 参数，详细示例见 `Solver/RL_PIPELINE.md`、`Solver/AGENT_DESIGN.md` 和 `mangazero_panel_ordering_plan.md`。主要依赖包括 PyTorch、torchvision、Pillow、NumPy、datasets、PaddleOCR（可选）、OpenCV 等；生成的数据和训练 checkpoint 默认已被 `.gitignore` 排除。
+数据生成与训练脚本均带 `argparse` 参数，详细示例见 `docs/RL_PIPELINE.md`、`docs/AGENT_DESIGN.md` 和 `docs/mangazero_panel_ordering_plan.md`。主要依赖包括 PyTorch、torchvision、Pillow、NumPy、datasets、PaddleOCR（可选）、OpenCV 等；生成的数据和训练 checkpoint 默认已被 `.gitignore` 排除。
 
 COMICS 构建示例：
 
