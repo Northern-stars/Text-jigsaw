@@ -163,10 +163,10 @@ class MangaZeroQwenVLLoRAClassifier(nn.Module):
     def _call_processor(self, **forward_kwargs):
         """Call this processor across transformers versions.
 
-        Newer Hugging Face processors require generation/image options like
-        ``return_tensors`` to live inside ``processor_kwargs``; older releases
-        accept them as top-level call kwargs. Try the new form first, then
-        fall back to the legacy form.
+        Newer Hugging Face processors merge top-level processing options such
+        as ``return_tensors`` and ``padding`` through ``ProcessingKwargs``.
+        Older releases accept them as plain call kwargs, so pass them at the
+        top level and only drop them if the installed version rejects them.
         """
         processing_kwargs = {
             "return_tensors": "pt",
@@ -174,12 +174,11 @@ class MangaZeroQwenVLLoRAClassifier(nn.Module):
         }
         try:
             return self.processor(
-                processor_kwargs=processing_kwargs,
+                **processing_kwargs,
                 **forward_kwargs,
             )
         except TypeError:
             return self.processor(
-                **processing_kwargs,
                 **forward_kwargs,
             )
 
@@ -232,10 +231,20 @@ class MangaZeroQwenVLLoRAClassifier(nn.Module):
                     add_generation_prompt=False,
                     return_dict=True,
                     return_tensors="pt",
-                    padding=True,
+                    processor_kwargs={"padding": True},
                 )
             except TypeError:
-                texts = [
+                try:
+                    inputs = self.processor.apply_chat_template(
+                        conversations,
+                        tokenize=True,
+                        add_generation_prompt=False,
+                        return_dict=True,
+                        return_tensors="pt",
+                        padding=True,
+                    )
+                except TypeError:
+                    texts = [
                     self.processor.apply_chat_template(
                         conversation,
                         tokenize=False,
