@@ -16,3 +16,4 @@ Data/*
 Solver/checkpoints*
 .venv
 *.pyc
+*.zip

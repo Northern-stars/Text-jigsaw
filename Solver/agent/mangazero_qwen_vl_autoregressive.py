@@ -148,6 +148,29 @@ class MangaZeroQwenVLAutoregressiveSolver(nn.Module):
     # Input encoding
     # ------------------------------------------------------------------
 
+    def _call_processor(self, **forward_kwargs):
+        """Call this processor across transformers versions.
+
+        Newer Hugging Face processors require generation/image options like
+        ``return_tensors`` to live inside ``processor_kwargs``; older releases
+        accept them as top-level call kwargs. Try the new form first, then
+        fall back to the legacy form.
+        """
+        processing_kwargs = {
+            "return_tensors": "pt",
+            "padding": True,
+        }
+        try:
+            return self.processor(
+                processor_kwargs=processing_kwargs,
+                **forward_kwargs,
+            )
+        except TypeError:
+            return self.processor(
+                **processing_kwargs,
+                **forward_kwargs,
+            )
+
     def prepare_inputs(
         self,
         panel_images: Tensor,
@@ -185,12 +208,10 @@ class MangaZeroQwenVLAutoregressiveSolver(nn.Module):
                 for conversation in conversations
             ]
             images, videos = process_vision_info(conversations)
-            inputs = self.processor(
+            inputs = self._call_processor(
                 text=texts,
                 images=images,
                 videos=videos,
-                return_tensors="pt",
-                padding=True,
             )
         except ImportError:
             try:
@@ -215,11 +236,9 @@ class MangaZeroQwenVLAutoregressiveSolver(nn.Module):
                     [item["image"] for item in conversation[0]["content"] if item["type"] == "image"]
                     for conversation in conversations
                 ]
-                inputs = self.processor(
+                inputs = self._call_processor(
                     text=texts,
                     images=images,
-                    return_tensors="pt",
-                    padding=True,
                 )
         return {
             key: value.to(self._input_device())
