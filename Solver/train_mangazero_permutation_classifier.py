@@ -324,7 +324,10 @@ def load_checkpoint(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
 ) -> int:
-    checkpoint = torch.load(path, map_location=device)
+    try:
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(path, map_location=device)
     model.load_state_dict(checkpoint["model"])
     if "optimizer" in checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer"])
