@@ -459,15 +459,24 @@ class MangaZeroQwenVLAutoregressiveSolver(nn.Module):
         if "decoder" in state_dict or "backbone" in state_dict:
             decoder_state = state_dict.get("decoder", {})
             if isinstance(decoder_state, dict) and decoder_state:
-                decoder_keys = {
-                    name: tensor for name, tensor in self.state_dict().items()
+                # 1. Build a state dict containing every live decoder key.
+                decoder_state_dict = {
+                    name: tensor
+                    for name, tensor in self.state_dict().items()
                     if not name.startswith("backbone.")
                 }
-                missing, unexpected = self._load_matching(decoder_keys, decoder_state)
+                missing = sorted(name for name in decoder_state_dict if name not in decoder_state)
+                unexpected = sorted(name for name in decoder_state if name not in decoder_state_dict)
                 if missing:
-                    raise RuntimeError(f"missing decoder keys: {sorted(missing)[:20]}")
+                    raise RuntimeError(f"missing decoder keys: {missing[:20]}")
                 if unexpected:
-                    raise RuntimeError(f"unexpected decoder keys: {sorted(unexpected)[:20]}")
+                    raise RuntimeError(f"unexpected decoder keys: {unexpected[:20]}")
+                # 2. Replace every decoder tensor with the checkpoint value.
+                for name in decoder_state_dict:
+                    decoder_state_dict[name] = decoder_state[name]
+                # 3. Let nn.Module.load_state_dict copy values into the real
+                #    parameters/buffers instead of into a detached copy.
+                self.load_state_dict(decoder_state_dict, strict=False)
             backbone_state = state_dict.get("backbone", {})
             if isinstance(backbone_state, dict) and backbone_state:
                 try:
