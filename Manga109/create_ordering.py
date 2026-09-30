@@ -44,6 +44,10 @@ try:
 except ImportError:
     tqdm = None
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from Manga109.reading_order_utils import sort_bboxes_reading_order
+
 
 # ---------------------------------------------------------------------------
 # XML parsing
@@ -129,46 +133,21 @@ def sort_frames_reading_order(
     Uses vertical band detection to group frames into rows, then sorts
     within each row from right to left.
     """
-    if not frames:
-        return []
+    class _FrameWithBbox:
+        __slots__ = ("frame", "bbox")
 
-    # Group into vertical bands
-    y_centers = [(f["ymin"] + f["ymax"]) / 2.0 for f in frames]
-    heights = [f["ymax"] - f["ymin"] for f in frames]
-    avg_h = sum(heights) / len(heights) if heights else page_height / 4
-    band_threshold = max(avg_h * 0.5, 10.0)
+        def __init__(self, frame: dict[str, Any]) -> None:
+            self.frame = frame
+            self.bbox = [frame["xmin"], frame["ymin"], frame["xmax"], frame["ymax"]]
 
-    # Simple row assignment: group frames whose y-centers are close
-    rows: list[list[int]] = []
-    row_centers: list[float] = []
-    for i, yc in enumerate(y_centers):
-        assigned = False
-        for r_idx, rc in enumerate(row_centers):
-            if abs(yc - rc) <= band_threshold:
-                rows[r_idx].append(i)
-                row_centers[r_idx] = sum(
-                    y_centers[j] for j in rows[r_idx]
-                ) / len(rows[r_idx])
-                assigned = True
-                break
-        if not assigned:
-            rows.append([i])
-            row_centers.append(yc)
-
-    # Sort rows top-to-bottom
-    row_order = sorted(range(len(rows)), key=lambda r: row_centers[r])
-
-    sorted_frames: list[dict[str, Any]] = []
-    for r_idx in row_order:
-        row_indices = rows[r_idx]
-        if rtl:
-            row_indices.sort(key=lambda i: -frames[i]["xmin"])
-        else:
-            row_indices.sort(key=lambda i: frames[i]["xmin"])
-        for i in row_indices:
-            sorted_frames.append(frames[i])
-
-    return sorted_frames
+    wrapped = [_FrameWithBbox(frame) for frame in frames]
+    sorted_wrapped = sort_bboxes_reading_order(
+        wrapped,
+        page_height=page_height,
+        rtl=rtl,
+        bbox_key="bbox",
+    )
+    return [item.frame for item in sorted_wrapped]
 
 
 # ---------------------------------------------------------------------------

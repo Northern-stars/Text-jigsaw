@@ -50,6 +50,7 @@ from Mangazero.build_dataset import (
     recognize_dialog_text,
     write_puzzle_directory,
 )
+from Manga109.reading_order_utils import sort_prepared_panels_reading_order
 
 try:
     from tqdm import tqdm
@@ -174,6 +175,32 @@ def parse_args(mode: str = "all") -> argparse.Namespace:
             "--no-skip-ocr-errors",
             action="store_false",
             dest="skip_ocr_errors",
+        )
+
+    if include_build:
+        parser.add_argument(
+            "--sort-panels-reading-order",
+            action="store_true",
+            default=True,
+            help="Geometrically re-sort panels into reading order before windowing.",
+        )
+        parser.add_argument(
+            "--no-sort-panels-reading-order",
+            action="store_false",
+            dest="sort_panels_reading_order",
+            help="Keep the source detection order instead of geometric reading order.",
+        )
+        parser.add_argument(
+            "--reading-order-rtl",
+            action="store_true",
+            default=True,
+            help="Within a row, order panels right-to-left (manga convention).",
+        )
+        parser.add_argument(
+            "--reading-order-ltr",
+            action="store_false",
+            dest="reading_order_rtl",
+            help="Within a row, order panels left-to-right (western convention).",
         )
 
     if mode == "all":
@@ -706,6 +733,11 @@ def build_ordering_from_raw(args: argparse.Namespace) -> None:
             page_groups = group_by_page(panels)
             for page_key, page_panels in page_groups.items():
                 page_panels.sort(key=lambda p: p.record.panel_index_in_page)
+                if getattr(args, "sort_panels_reading_order", False):
+                    page_panels = sort_prepared_panels_reading_order(
+                        page_panels,
+                        rtl=getattr(args, "reading_order_rtl", True),
+                    )
                 full_key = f"{group_key}/{page_key}"
                 grouped_panels.setdefault(full_key, []).extend(page_panels)
 

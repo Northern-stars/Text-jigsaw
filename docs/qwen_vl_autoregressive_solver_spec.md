@@ -23,10 +23,13 @@ target_order[t] = 第 t 个正确 panel 在乱序输入中的位置
   Qwen2.5-VL Processor (chat template + 图像预处理)
           |
           v
-  Qwen2.5-VL Backbone (VLM, LoRA 微调)
+  Qwen2.5-VL Backbone (VLM, LoRA 微调，输出 last hidden states)
           |
           v
-  编码: 最后一层 hidden_states -> 每个 panel 的表示
+  per-panel 池化: <|image_pad|> token 切段 + mean-pool
+          |
+          v
+  panel_projection + panel_norm -> memory [B, K, decoder_dim]
           |
           v
   自回归 pointer decoder:
@@ -81,6 +84,13 @@ panel 0: ...
 panel 1: ...
 ```
 
+实际文本格式为：
+
+```text
+panel 0: ...
+panel 1: ...
+```
+
 ### Processor 编码
 
 `AutoProcessor.apply_chat_template()` 产出：
@@ -88,9 +98,11 @@ panel 1: ...
 - `input_ids`
 - `attention_mask`
 - `pixel_values`
-- `image_grid_thw`
+- `image_grid_thw`（若 processor 返回）
 
 这些 tensor 会移动到 backbone 所在设备。
+
+兼容处理：`_call_processor()` 对 transformers 新旧版本做回退。新版把 `return_tensors/padding` 作为顶层 processing kwargs 传入；旧版不允许时降级为不带这些参数的调用。
 
 ---
 
@@ -98,64 +110,117 @@ panel 1: ...
 
 VLM 的最后一层 `hidden_states` 形状为 `[B, seq_len, hidden_size]`。
 
-把多个 panel 图像对应 token 聚合成“每个 panel 一个向量”：
+实现上（不是可选的抽象方案）：
+
+1. 通过 `input_ids` 找到 `<|image_pad|>` token 的连续区间，每个连续 run 对应一张 panel 的图像 token。
+2. 对每个 run 的 hidden state 做 mean-pool，得到 `[B, K, hidden_size]`。
+3. 经过 `panel_projection`（`Linear(hidden_size, decoder_dim)`）和 `panel_norm`（`LayerNorm`）得到最终 memory。
 
 ```text
 per-panel 表示 [B, K, hidden_size]
+-> panel_projection + panel_norm
+-> memory [B, K, decoder_dim]
 ```
 
-可选融合方式：
+代码位置：`encode_panels()` / `_pool_per_panel()`。
 
-- 使用图像 token 的 mean-pool / last-image-token
-- 把 OCR 文本 token 与图像 token 一起池化
-- 通过一个可学习的 set encoder（如 TransformerEncoder）再做跨 panel 上下文建模
-
-这一步产生的 `memory` 是自回归解码的候选集合，也是 pointer 的 key/value 来源。
+注意：代码里声明了 `type_embedding` 参数，但目前没有把它加回 memory 前向路径，属于未启用的预留 token。
 
 ---
 
-## 5. 自回归排序输出（参考方案“模型如何输出排序”）
+## 5. 自回归头实现细节（输入、结构、输出）
 
-### 5.1 每一轮做什么
+### 5.1 头部的模块组成
+
+自回归头是指 backbone 之外的部分：
+
+```python
+self.panel_projection = nn.Linear(hidden_size, decoder_dim)
+self.panel_norm = nn.LayerNorm(decoder_dim)
+self.type_embedding = nn.Parameter(...)   # 已声明，未参与前向
+self.bos_token = nn.Parameter(...)        # decoder 起始向量
+
+decoder_layer = nn.TransformerDecoderLayer(
+    d_model=decoder_dim,
+    nhead=num_heads,
+    dim_feedforward=decoder_dim * 4,
+    dropout=decoder_dropout,
+    activation="gelu",
+    batch_first=True,
+    norm_first=True,
+)
+self.pointer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=decoder_layers)
+
+self.output_norm = nn.LayerNorm(decoder_dim)
+self.query_projection = nn.Linear(decoder_dim, decoder_dim)
+self.key_projection = nn.Linear(decoder_dim, decoder_dim)
+```
+
+默认构造参数：
+
+| 参数 | 默认值 |
+| --- | --- |
+| `decoder_layers` | 2 |
+| `num_heads` | 8 |
+| `decoder_dim` | 256 |
+| `decoder_dropout` | 0.1 |
+
+### 5.2 输入
+
+头部有两个输入：
+
+1. `memory [B, K, decoder_dim]`：全部候选 panel 的编码，作为 pointer 的 key/value，也是解码历史中“已选 panel 的表示”来源。
+2. 解码历史：`[BOS] + memory[selected]`，即 `[B, 1 + t, decoder_dim]`。
+
+- 推理第 0 步只有 `bos_token`
+- 推理第 t 步为 `[B, 1 + t, decoder_dim]`
+- 训练 teacher forcing 时用 `target_order[:, :-1]` 代替已选序列
+
+### 5.3 输出
+
+打分公式：
+
+```python
+queries = query_projection(output_norm(decoder_state))   # [B, 1, decoder_dim]
+keys = key_projection(memory)                             # [B, K, decoder_dim]
+logits = queries @ keys.T / sqrt(decoder_dim)             # [B, 1, K]
+```
+
+- 训练输出 `[B, K, K]`：`logits[b, t, j]` 是第 b 个样本第 t 步选择第 j 个输入 panel 的倾向。
+- 推理输出 `[B, K]`：整个 greedy 循环结束后得到逐 step 选中的 panel index 序列。
+
+### 5.4 训练/推理差异
+
+| 阶段 | decoder 输入 | mask 方式 | 输出 |
+| --- | --- | --- | --- |
+| 训练（teacher forcing） | `[BOS] + memory[target_order[:, :-1]]` | 按 `target_order` 构造上三角 mask；pointer logits 再 mask 已选 | `[B, K, K]` |
+| 推理（greedy） | `[BOS] + memory[selected]` | 每步把已选 panel logits 置 `-inf` | `[B, K]` |
+
+`memory` 可复用：`forward(..., memory=...)` / `predict_order(..., memory=...)` 支持传入已编码 memory，避免评测时重复跑 VLM。
+
+---
+
+## 6. 自回归排序流程
+
+### 6.1 每一轮做什么
 
 模型不是一次输出整个排序，而是逐步输出“下一张应该选哪个 panel”：
 
 1. 当前已选历史为 `selected`（乱序输入中的 panel index）。
-2. 对剩余候选 panel 计算分数：
-
-```text
-logits[b, j] = 第 b 个样本、第 j 个输入 panel 是“下一张”的倾向
-```
-
+2. 对剩余候选 panel 计算分数。
 3. 把 `selected` 中已选 panel 的分数设为 `-inf`，确保不会重复选择。
 4. `argmax` 得到当前步选择的 panel index。
 5. 把它追加到 `selected`。
 6. 重复 K 次，得到完整排序。
 
-### 5.2 pointer logits
-
-```python
-queries = query_projection(decoder_state)   # 当前解码步的 query
-keys    = key_projection(memory)            # 每个 panel 的 key
-logits  = queries @ keys.T / sqrt(d)        # [B, K]
-```
-
-`logits[b, j]` 即“第 b 个样本当前步选择第 j 个输入 panel 的倾向”。
-
-### 5.3 训练时：teacher forcing
-
-- 使用 `target_order[:, :-1]` 构造 decoder 输入。
-- 第 `t` 步 decoder 看到的是前 `t` 个“正确 panel”。
-- `pointer_logits` 形状为 `[B, K, K]`，其中 `logits[b, t, j]` 表示第 `b` 个样本第 `t` 步选择第 `j` 个 panel 的倾向。
-- 训练目标：让 `logits[b, t]` 指向真实 `target_order[b, t]`。
-
-### 5.4 推理时：greedy decode
+### 6.2 推理 greedy decode
 
 ```text
 selected = []
 for t in 0..K-1:
-    decoder_state = f(selected, memory)
-    logits = pointer_logits(decoder_state, memory)   # [B, K]
+    decoder_inputs = [BOS] + memory[selected]
+    decoder_states = pointer_decoder(decoder_inputs, memory, causal_mask)
+    logits = pointer_logits(decoder_states[:, -1:], memory)   # [B, 1, K]
     logits[selected] = -inf
     next_idx = argmax(logits)
     selected.append(next_idx)
@@ -178,7 +243,7 @@ for t in 0..K-1:
 
 ---
 
-## 6. 训练流程
+## 7. 训练流程
 
 ### 数据准备
 
@@ -217,7 +282,7 @@ def pointer_cross_entropy(pointer_logits, target_order):
 ```python
 AdamW([
     {"params": backbone_params, "lr": 1e-4},  # LoRA adapter
-    {"params": decoder_params,  "lr": 1e-3},  # 自回归 decoder + 分类头
+    {"params": decoder_params,  "lr": 1e-3},  # 自回归 decoder + 投影层
 ])
 ```
 
@@ -239,9 +304,8 @@ AdamW([
 for epoch:
     for batch in train_loader:
         batch = randomize_training_batch(batch)
-        memory = encode(panel_images, dialog_texts)
-        pointer_logits = forward(memory, target_order[:, :-1])
-        loss = pointer_cross_entropy(pointer_logits, target_order) / grad_accum_steps
+        logits = model(panel_images, target_order=target_order, dialog_texts=...)
+        loss = pointer_cross_entropy(logits, target_order) / grad_accum_steps
         loss.backward()
         每 grad_accum_steps 步: clip -> optimizer.step -> zero_grad
     在 val / test 上 evaluate（greedy decode）
@@ -257,58 +321,56 @@ for epoch:
 
 ---
 
-## 7. 量化与 checkpoint
+## 8. 量化与 checkpoint
 
 - 支持 4-bit NF4 QLoRA（`bitsandbytes`），加载时 `prepare_model_for_kbit_training`
-- 默认只保存 LoRA adapter + decoder + `class_orders`（如仍需要），不保存完整 3B 权重
+- 默认只保存 LoRA adapter + decoder 相关参数（不含 `class_orders`，自回归实现没有该 buffer）
 - `--save-full-state` 可保存完整状态
 
 ---
 
-## 8. 与全排列分类方案的差异
+## 9. 与全排列分类方案的差异
 
 | 维度 | 全排列分类 | 自回归 pointer 排序（本方案） |
 | --- | --- | --- |
 | 输出 | `[B, K!]` logits，argmax 查表 | 逐步输出 `[B, K]` panel 指针 |
 | 类别数 | `K!`（K=8 即 40320 类） | 每步最多 K 个候选，总量线性 |
-| 解码 | 一次前向 | K 次前向，每次选下一张 |
+| 解码 | 一次前向 | K 次 decoder 前向，每次选下一张 |
 | 训练 loss | 全排列分类交叉熵 | 每步 pointer 交叉熵（teacher forcing） |
 | 是否允许逐张修正 | 否 | 是，greedy/beam 可按步修正 |
 | 复杂度 | `K!` 类别随 K 指数增长 | 每步 K 选 1，适合更大 K |
 
 ---
 
-## 9. 核心代码索引
+## 10. 核心代码文件
 
 | 文件 | 职责 |
 | --- | --- |
-| `Solver/agent/mangazero_set2seq_solver.py` | 现有 set-to-sequence solver 的 encoder + pointer decoder 参考 |
-| `Solver/train_mangazero_panel_ordering.py` | 现有 teacher forcing + pointer cross entropy 训练参考 |
-| `Solver/agent/mangazero_qwen_vl_lora_classifier.py` | 现有 VLM backbone + LoRA + prompt 构建参考 |
-| `Solver/train_mangazero_qwen_vl_lora.py` | 现有 VLM 训练、评测、checkpoint 参考 |
-| `Solver/env/mangazero_panel_env.py` | 数据集和 batch 组装（保持不变） |
+| `Solver/agent/mangazero_qwen_vl_autoregressive.py` | VLM + LoRA 编码器、per-panel 池化、自回归 pointer decoder、teacher forcing、greedy decode |
+| `Solver/train_mangazero_qwen_vl_autoregressive.py` | 训练循环、评测、checkpoint |
+| `Solver/test_mangazero_qwen_vl_autoregressive.py` | 从 checkpoint 重建模型并评估指定 split |
+| `Solver/env/mangazero_panel_env.py` | 数据集和 batch 组装 |
+
 ---
 
-## 10. 实现状态与使用说明
+## 11. 实现状态与使用说明
 
-> 本节记录当前代码实现的功能与调用方式，与上面第 1-9 节的方案设计保持一致。
-
-### 10.1 已实现功能
+### 11.1 已实现功能
 
 | 功能 | 实现位置 | 说明 |
 | --- | --- | --- |
-| VLM + LoRA 主干 | `Solver/agent/mangazero_qwen_vl_autoregressive.py` (`MangaZeroQwenVLAutoregressiveSolver.__init__`) | 复用全排列分类版的 backbone 加载逻辑：Qwen2.5-VL-3B + PEFT LoRA，支持 4-bit NF4 QLoRA |
+| VLM + LoRA 主干 | `MangaZeroQwenVLAutoregressiveSolver.__init__` | Qwen2.5-VL-3B + PEFT LoRA，支持 4-bit NF4 QLoRA |
 | 输入编码 | `prepare_inputs()` | K 张 panel 转 PIL，多图像 user 消息 + 排序 prompt，经 AutoProcessor 编码 |
-| per-panel 池化 | `encode_panels()` / `_pool_per_panel()` | 按 `<|image_pad|>` token 的连续 run 切分出 K 个 panel 段，分别 mean-pool 得到 `[B, K, hidden_size]` memory |
-| 投影到 decoder 空间 | `panel_projection` + `panel_norm` | VLM hidden 映射到 `decoder_dim`，跨设备时自动对齐 dtype |
+| per-panel 池化 | `encode_panels()` / `_pool_per_panel()` | 按 `<|image_pad|>` token 的连续 run 切分出 K 个 panel 段，分别 mean-pool |
+| 投影到 decoder 空间 | `panel_projection` + `panel_norm` | VLM hidden 映射到 `decoder_dim` |
 | pointer decoder | `pointer_decoder` + `query_projection` + `key_projection` | TransformerDecoder 逐层解码，query 与 memory 的 key 做点积打分 |
 | teacher forcing 训练 | `forward(target_order=...)` + `pointer_cross_entropy()` | 输出 `[B, K, K]` pointer logits；训练 loss 是每一步的 panel 指针交叉熵 |
 | greedy decode 推理 | `predict_order()` / `greedy_decode()` | 每步把已选 panel 掩码为 `-inf`，argmax 选出下一张，重复 K 次得到 `[B, K]` 排序 |
-| 内存复用 | `forward(memory=...)` / `predict_order(memory=...)` | 已有 memory 时跳过 VLM 前向，避免评测时重复编码 |
+| 内存复用 | `forward(memory=...)` / `predict_order(memory=...)` | 已有 memory 时跳过 VLM 前向 |
 | 训练脚本 | `Solver/train_mangazero_qwen_vl_autoregressive.py` | 在线重排增强、梯度累积、梯度裁剪、双学习率、best/last/epoch checkpoint、train/val/test 评估 |
 | 测试脚本 | `Solver/test_mangazero_qwen_vl_autoregressive.py` | 从 checkpoint 重建模型，评估指定 split 并可输出 JSON |
 
-### 10.2 快速调用
+### 11.2 快速调用
 
 基础训练（6 panel）：
 
@@ -360,7 +422,7 @@ python Solver/test_mangazero_qwen_vl_autoregressive.py \
   --output-json Solver/checkpoints_mangazero_qwen_vl_autoregressive/test.json
 ```
 
-### 10.3 训练脚本参数
+### 11.3 训练脚本参数
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -399,7 +461,7 @@ python Solver/test_mangazero_qwen_vl_autoregressive.py \
 | `--device` | 自动 `cuda` / `cpu` | 训练设备 |
 | `--seed` | `0` | 随机种子，影响 split 与在线重排 |
 
-### 10.4 测试脚本参数
+### 11.4 测试脚本参数
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -416,7 +478,7 @@ python Solver/test_mangazero_qwen_vl_autoregressive.py \
 
 注意 `--seed` 与 `--split-ratio` 必须与训练时一致，否则 train/val/test 样本划分会变化。
 
-### 10.5 checkpoint 与评估
+### 11.5 checkpoint 与评估
 
 保存内容（`Solver/checkpoints_mangazero_qwen_vl_autoregressive/`）：
 
@@ -444,8 +506,11 @@ checkpoint 内部：
 
 评估指标：`loss`、`exact_match`、`position_accuracy`、`pairwise_accuracy`。
 
-### 10.6 已知限制
+### 11.6 实现细节与已知注意点
 
-- 当前 shell 没有 `torch` / `transformers` / `peft`，三个新增文件仅通过 `py_compile`，未在本机跑真实 forward；需在配置好依赖的环境中运行。
+- 自回归头是轻量模块（2 层 TransformerDecoder，默认 256 维），主要开销在 VLM 编码；推理 K 次 decoder 前向成本很低。
+- `type_embedding` 已声明但未加入前向，当前属于预留 token；如果启用，需要在 `encode_panels()` 中把它加到 memory 上。
 - `_pool_per_panel` 依赖 processor 输出 `input_ids` 中的 `<|image_pad|>` token 位置；若后续升级 processor 导致图像 token 标记变化，需要同步调整。
 - 推理是 greedy decode（argmax），暂无 beam search。
+- `_call_processor` 已兼容 transformers 新旧版本的 `return_tensors/padding` 传参方式。
+- 本机未跑完整训练前向；需在配置好 torch/transformers/peft 的环境中运行验证。
