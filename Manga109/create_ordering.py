@@ -235,6 +235,7 @@ def create_manga109_ordering(
     manga109_dir: Path,
     output_dir: Path,
     panel_count: int = 6,
+    stride: int = 1,
     puzzle_num: int = 200,
     target_width: int = 224,
     target_height: int = 224,
@@ -250,6 +251,8 @@ def create_manga109_ordering(
     Output format is identical to Mangazero/build_dataset.py so that
     MangaZeroPanelOrderingDataset can consume it without changes.
     """
+    if stride <= 0:
+        raise ValueError("stride must be positive")
     annotations_dir = manga109_dir / "annotations"
     images_dir = manga109_dir / "images"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -308,8 +311,8 @@ def create_manga109_ordering(
         with Image.open(image_path) as full_img:
             full_img = full_img.convert("RGB")
 
-        # Sliding window
-        for start in range(0, len(ordered_frames) - panel_count + 1):
+        # Sliding window with configurable stride
+        for start in range(0, len(ordered_frames) - panel_count + 1, stride):
             if puzzle_count >= puzzle_num:
                 break
 
@@ -437,6 +440,7 @@ def parse_args() -> argparse.Namespace:
         help="Output directory for puzzles and manifest.jsonl.",
     )
     p.add_argument("--panel-count", type=int, default=6, help="Panels per sample (sliding window size).")
+    p.add_argument("--stride", type=int, default=1, help="Sliding window step between puzzle samples. Default 1 means full overlap; larger values reduce overlap.")
     p.add_argument("--puzzle-num", type=int, default=200, help="Maximum number of puzzle samples.")
     p.add_argument("--target-width", type=int, default=224, help="Padded panel image width.")
     p.add_argument("--target-height", type=int, default=224, help="Padded panel image height.")
@@ -456,6 +460,7 @@ def main() -> None:
         manga109_dir=args.manga109_dir,
         output_dir=args.output_dir,
         panel_count=args.panel_count,
+        stride=args.stride,
         puzzle_num=args.puzzle_num,
         target_width=args.target_width,
         target_height=args.target_height,
