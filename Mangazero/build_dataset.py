@@ -100,6 +100,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ocr-use-angle-cls", action="store_true")
     parser.add_argument("--ocr-enable-pir", action="store_true")
     parser.add_argument("--ocr-enable-mkldnn", action="store_true")
+    parser.add_argument(
+        "--ocr-model-size",
+        default="default",
+        help=(
+            "PaddleOCR model tier. 'default' keeps the version default. "
+            "PP-OCRv6 supports tiny/small/medium; PP-OCRv5/v4/v3 support "
+            "mobile/server. Unknown tiers fall back to the default."
+        ),
+    )
     parser.add_argument("--ocr-enhance-pad", type=float, default=0.05, help="Textbox crop padding ratio (0 disables).")
     parser.add_argument("--ocr-enhance-upscale", action="store_true", help="Upscale textbox crops before OCR.")
     parser.add_argument("--ocr-enhance-rotate", action="store_true", help="Try rotated crops and keep best text.")
@@ -408,6 +417,7 @@ def ocr_worker_config(args: argparse.Namespace) -> dict[str, Any]:
         "ocr_use_angle_cls": args.ocr_use_angle_cls,
         "ocr_enable_pir": args.ocr_enable_pir,
         "ocr_enable_mkldnn": args.ocr_enable_mkldnn,
+        "ocr_model_size": getattr(args, "ocr_model_size", "default"),
         "ocr_enhance_pad": getattr(args, "ocr_enhance_pad", 0.0),
         "ocr_enhance_upscale": getattr(args, "ocr_enhance_upscale", False),
         "ocr_enhance_rotate": getattr(args, "ocr_enhance_rotate", False),
@@ -470,14 +480,59 @@ def build_paddle_ocr(args: argparse.Namespace):
         ) from exc
     patch_missing_paddle_optimization_level()
     log_paddle_device_info(args)
-    return PaddleOCR(
-        lang=args.ocr_lang,
-        ocr_version=args.ocr_version,
-        device=args.ocr_device,
-        use_doc_orientation_classify=False,
-        use_doc_unwarping=False,
-        use_textline_orientation=args.ocr_use_angle_cls,
-    )
+    ocr_kwargs = {
+        "lang": args.ocr_lang,
+        "ocr_version": args.ocr_version,
+        "device": args.ocr_device,
+        "use_doc_orientation_classify": False,
+        "use_doc_unwarping": False,
+        "use_textline_orientation": args.ocr_use_angle_cls,
+    }
+
+    # Optionally select a larger model tier.  PP-OCRv6 only ships
+    # tiny/small/medium (no server tier); server models exist for v5 and v4.
+    # Requests that are not available fall back to the version default.
+    model_size = str(getattr(args, "ocr_model_size", "") or "").strip().lower()
+    if model_size and model_size != "default":
+        det_name, rec_name = resolve_ocr_model_names(
+            str(args.ocr_version or "PP-OCRv6"), model_size
+        )
+        if det_name is not None:
+            ocr_kwargs["text_detection_model_name"] = det_name
+            ocr_kwargs["text_recognition_model_name"] = rec_name
+            debug_log(
+                getattr(args, "debug_ocr", False),
+                f"use OCR models det={det_name} rec={rec_name}",
+            )
+        else:
+            print(
+                f"WARN: --ocr-model-size {model_size} is not available for "
+                f"{args.ocr_version}; using the version default models.",
+                flush=True,
+            )
+
+    return PaddleOCR(**ocr_kwargs)
+
+
+# Model tiers actually published per OCR version.  "medium" is the default
+# PP-OCRv6 tier; server only exists for v5/v4.
+OCR_MODEL_TIERS: dict[str, set[str]] = {
+    "PP-OCRv6": {"tiny", "small", "medium"},
+    "PP-OCRv5": {"mobile", "server"},
+    "PP-OCRv4": {"mobile", "server"},
+    "PP-OCRv3": {"mobile", "server"},
+}
+
+
+def resolve_ocr_model_names(
+    version: str,
+    model_size: str,
+) -> tuple[str | None, str | None]:
+    """Return (det_name, rec_name) for a version/tier, or (None, None)."""
+    tiers = OCR_MODEL_TIERS.get(version, set())
+    if model_size not in tiers:
+        return None, None
+    return f"{version}_{model_size}_det", f"{version}_{model_size}_rec"
 
 
 def patch_missing_paddle_optimization_level() -> None:

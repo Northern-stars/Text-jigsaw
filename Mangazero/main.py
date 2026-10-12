@@ -117,6 +117,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ocr-use-angle-cls", action="store_true")
     parser.add_argument("--ocr-enable-pir", action="store_true")
     parser.add_argument("--ocr-enable-mkldnn", action="store_true")
+    parser.add_argument(
+        "--ocr-model-size",
+        default="default",
+        help=(
+            "PaddleOCR model tier. 'default' keeps the version default. "
+            "PP-OCRv6 supports tiny/small/medium; PP-OCRv5/v4/v3 support "
+            "mobile/server. Unknown tiers fall back to the default."
+        ),
+    )
     parser.add_argument("--ocr-enhance-pad", type=float, default=0.05, help="Textbox crop padding ratio (0 disables).")
     parser.add_argument("--ocr-enhance-upscale", action="store_true", help="Upscale textbox crops before OCR.")
     parser.add_argument("--ocr-enhance-rotate", action="store_true", help="Try rotated crops and keep best text.")
@@ -398,6 +407,7 @@ def ocr_worker_config(args: argparse.Namespace) -> dict[str, Any]:
         "ocr_use_angle_cls": args.ocr_use_angle_cls,
         "ocr_enable_pir": args.ocr_enable_pir,
         "ocr_enable_mkldnn": args.ocr_enable_mkldnn,
+        "ocr_model_size": getattr(args, "ocr_model_size", "default"),
         "ocr_enhance_pad": getattr(args, "ocr_enhance_pad", 0.0),
         "ocr_enhance_upscale": getattr(args, "ocr_enhance_upscale", False),
         "ocr_enhance_rotate": getattr(args, "ocr_enhance_rotate", False),

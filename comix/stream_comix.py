@@ -149,6 +149,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ocr-use-angle-cls", action="store_true")
     parser.add_argument("--ocr-enable-pir", action="store_true")
     parser.add_argument("--ocr-enable-mkldnn", action="store_true")
+    parser.add_argument(
+        "--ocr-model-size",
+        default="default",
+        help=(
+            "PaddleOCR model tier. 'default' keeps the version default. "
+            "PP-OCRv6 supports tiny/small/medium; PP-OCRv5/v4/v3 support "
+            "mobile/server. Unknown tiers fall back to the default."
+        ),
+    )
     parser.add_argument("--ocr-enhance-pad", type=float, default=0.05, help="Textbox crop padding ratio (0 disables).")
     parser.add_argument("--ocr-enhance-upscale", action="store_true", help="Upscale textbox crops before OCR.")
     parser.add_argument("--ocr-enhance-rotate", action="store_true", help="Try rotated crops and keep best text.")
@@ -662,7 +671,24 @@ def build_ordering_from_raw(args: argparse.Namespace) -> None:
 
     output_dir.mkdir(parents=True, exist_ok=True)
     ocr = None if args.disable_ocr else _build_ocr_engine(args)
+    try:
+        _build_ordering_from_raw_impl(args, raw_dir, output_dir, target_size, rng, ocr)
+    finally:
+        # Shut the OCR worker down cleanly. Without this the child process is
+        # terminated by the interpreter and Paddle prints a C++ SIGTERM abort.
+        close = getattr(ocr, "close", None)
+        if callable(close):
+            close()
 
+
+def _build_ordering_from_raw_impl(
+    args: argparse.Namespace,
+    raw_dir: Path,
+    output_dir: Path,
+    target_size: tuple[int, int],
+    rng: random.Random,
+    ocr,
+) -> None:
     raw_samples = load_raw_samples_from_dir(raw_dir)
     if not raw_samples:
         raise RuntimeError(f"No raw samples found in {raw_dir}")
@@ -783,6 +809,8 @@ def _build_ocr_engine(args: argparse.Namespace):
         args.ocr_enhance_upscale = False
     if not hasattr(args, "ocr_enhance_rotate"):
         args.ocr_enhance_rotate = False
+    if not hasattr(args, "ocr_model_size"):
+        args.ocr_model_size = "default"
     return base_build_ocr_engine(args)
 
 
