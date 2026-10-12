@@ -250,11 +250,14 @@ def create_manga109_ordering(
     books: list[str] | None = None,
     seed: int = 0,
     translation_engine: str = "none",
-    translation_model: str = "mHagos/sugoi-4-japanese-to-english-translator",
-    translation_device: str = "cuda",
+    translation_model: str = "",
+    translation_device: str = "cpu",
     translation_dtype: str = "bfloat16",
     translation_cache: Path | None = None,
-    translation_batch_size: int = 8,
+    translation_batch_size: int = 32,
+    translation_local_files_only: bool = False,
+    translation_model_dir: Path | None = None,
+    translation_compute_type: str = "default",
 ) -> dict[str, Any]:
     """Create panel-ordering puzzle samples from Manga109.
 
@@ -268,7 +271,7 @@ def create_manga109_ordering(
     output_dir.mkdir(parents=True, exist_ok=True)
     rng = random.Random(seed)
 
-    from Manga109.translation import build_translator, translate_text_map
+    from Manga109.translation import build_translator, close_translator, translate_text_map
 
     translator = None
     if translation_engine != "none":
@@ -279,6 +282,9 @@ def create_manga109_ordering(
             dtype=translation_dtype,
             cache_path=translation_cache,
             batch_size=translation_batch_size,
+            local_files_only=translation_local_files_only,
+            model_dir=translation_model_dir,
+            compute_type=translation_compute_type,
         )
 
     if books:
@@ -456,6 +462,7 @@ def create_manga109_ordering(
                 break
 
     manifests.close()
+    close_translator(translator)
 
     # Also write the combined manifest for legacy consumers.
     manifest_path = output_dir / "manifest.jsonl"
@@ -512,18 +519,53 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--translation-engine",
         default="none",
-        choices=("none", "sugoi"),
-        help="Translation engine for XML dialog text. none keeps the original Japanese.",
+        choices=("none", "sugoi-ct2", "sugoi", "sugoi-hf"),
+        help=(
+            "Translation engine for XML dialog text. "
+            "none keeps the original Japanese; "
+            "sugoi-ct2 is the fast CTranslate2 model; "
+            "sugoi/sugoi-hf use a Hugging Face causal LM (large GPU)."
+        ),
     )
     p.add_argument(
         "--translation-model",
-        default="mHagos/sugoi-4-japanese-to-english-translator",
-        help="Sugoi model name for ja->en translation.",
+        default="",
+        help=(
+            "HF repo id or local directory for the translation model. "
+            "Empty uses the engine default "
+            "(sugoi-ct2 -> entai2965/sugoi-v4-ja-en-ctranslate2, "
+            "sugoi-hf -> sugoitoolkit/Sugoi-14B-Ultra-HF)."
+        ),
     )
-    p.add_argument("--translation-device", default="cuda")
-    p.add_argument("--translation-dtype", default="bfloat16", choices=("float16", "bfloat16", "float32"))
+    p.add_argument(
+        "--translation-device",
+        default="cpu",
+        help="Device for translation: cpu or cuda. CTranslate2 defaults to cpu.",
+    )
+    p.add_argument(
+        "--translation-dtype",
+        default="bfloat16",
+        choices=("float16", "bfloat16", "float32"),
+        help="dtype for the Hugging Face causal LM translator only.",
+    )
     p.add_argument("--translation-cache", type=Path, default=None, help="Path for translation JSONL cache.")
-    p.add_argument("--translation-batch-size", type=int, default=8)
+    p.add_argument("--translation-batch-size", type=int, default=32)
+    p.add_argument(
+        "--translation-local-files-only",
+        action="store_true",
+        help="Do not download; require the model to be present locally.",
+    )
+    p.add_argument(
+        "--translation-model-dir",
+        type=Path,
+        default=None,
+        help="Local directory to download/snapshot the model into.",
+    )
+    p.add_argument(
+        "--translation-compute-type",
+        default="default",
+        help="CTranslate2 compute type (default, int8, int8_float16, float16, ...).",
+    )
     return p.parse_args()
 
 
@@ -552,6 +594,9 @@ def main() -> None:
         translation_dtype=args.translation_dtype,
         translation_cache=args.translation_cache,
         translation_batch_size=args.translation_batch_size,
+        translation_local_files_only=args.translation_local_files_only,
+        translation_model_dir=args.translation_model_dir,
+        translation_compute_type=args.translation_compute_type,
     )
 
 
