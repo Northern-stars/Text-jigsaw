@@ -121,11 +121,14 @@ def build_ordering_text_prompt(
     *,
     start_index: int = 0,
     ocr_header: str = "OCR text",
+    no_image_note: Optional[str] = None,
 ) -> str:
     """Task-guidance text prompt for a panel-ordering puzzle.
 
     Mirrors the wording used by the existing Qwen-VL solvers. ``texts`` is the
-    per-panel OCR/dialog list; pass ``None`` to omit the OCR block.
+    per-panel OCR/dialog list; pass ``None`` to omit the OCR block. When
+    ``no_image_note`` is set, the note is appended so the model is told that no
+    panel images are attached (used by the guess path).
     """
     panel_ids = ", ".join(str(start_index + index) for index in range(panel_count))
     prompt = (
@@ -145,6 +148,8 @@ def build_ordering_text_prompt(
                 lines.append(f"panel {start_index + index}: {text}")
         if lines:
             prompt += f"\n{ocr_header}:\n" + "\n".join(lines)
+    if no_image_note:
+        prompt += f"\n{no_image_note}"
     return prompt
 
 
@@ -154,18 +159,30 @@ def build_ordering_messages(
     *,
     start_index: int = 0,
     system_prompt: Optional[str] = None,
+    include_images: bool = True,
+    no_image_note: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Default prompt generator: interleave panel images with the task prompt.
 
     Returns chat-style messages ready for ``processor.apply_chat_template``.
+    With ``include_images=False`` the panel images are omitted and only the
+    task text is kept (used by the mirage path); the text prompt itself is
+    identical either way. ``no_image_note`` optionally appends a sentence to
+    the text prompt (used by the guess path to state that no images are given).
     """
     content: list[dict[str, Any]] = []
-    for panel in panels:
-        content.append({"type": "image", "image": to_pil(panel)})
+    if include_images:
+        for panel in panels:
+            content.append({"type": "image", "image": to_pil(panel)})
     content.append(
         {
             "type": "text",
-            "text": build_ordering_text_prompt(len(panels), texts, start_index=start_index),
+            "text": build_ordering_text_prompt(
+                len(panels),
+                texts,
+                start_index=start_index,
+                no_image_note=no_image_note,
+            ),
         }
     )
     messages: list[dict[str, Any]] = []
@@ -173,6 +190,60 @@ def build_ordering_messages(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": content})
     return messages
+
+
+def build_ordering_messages_mirage(
+    panels: Sequence[PanelImage],
+    texts: TextList = None,
+    *,
+    start_index: int = 0,
+    system_prompt: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Prompt generator for mirage inference: same text prompt, no images.
+
+    Builds exactly the same user text as :func:`build_ordering_messages` but
+    omits every panel image, so the model sees only the instruction (and any
+    OCR text). The prompt deliberately says nothing about the images being
+    missing. Panel items are not decoded, so callers may pass placeholders.
+    """
+    return build_ordering_messages(
+        panels,
+        texts,
+        start_index=start_index,
+        system_prompt=system_prompt,
+        include_images=False,
+    )
+
+
+GUESS_NO_IMAGE_NOTE = (
+    "No panel images are provided. With only this text, guess the most likely "
+    "reading order."
+)
+
+
+def build_ordering_messages_guess(
+    panels: Sequence[PanelImage],
+    texts: TextList = None,
+    *,
+    start_index: int = 0,
+    system_prompt: Optional[str] = None,
+    no_image_note: str = GUESS_NO_IMAGE_NOTE,
+) -> list[dict[str, Any]]:
+    """Prompt generator for guess inference: no images, explicitly stated.
+
+    Same text prompt as :func:`build_ordering_messages`, but without any panel
+    image and with an extra sentence telling the model that no images are
+    attached, so it is expected to guess from the text alone. Panel items are
+    not decoded, so callers may pass placeholders.
+    """
+    return build_ordering_messages(
+        panels,
+        texts,
+        start_index=start_index,
+        system_prompt=system_prompt,
+        include_images=False,
+        no_image_note=no_image_note,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +396,14 @@ class VLMOrderingSolver:
     prompt_generator:
         Callable ``(panels, texts) -> prompt``. Defaults to
         :func:`build_ordering_messages`.
+    mirage_prompt_generator:
+        Prompt builder used by :meth:`mirage_inference`; it must assemble the
+        same text prompt but skip the images. Defaults to
+        :func:`build_ordering_messages_mirage`.
+    guess_prompt_generator:
+        Prompt builder used by :meth:`guess_inference`; like the mirage one but
+        it must also state that no images are provided. Defaults to
+        :func:`build_ordering_messages_guess`.
     answer_generator:
         Callable ``(raw_output, panel_count) -> list[int]``. Defaults to
         :func:`parse_ordering_answer`.
@@ -340,6 +419,8 @@ class VLMOrderingSolver:
         self,
         vlm_infer: VLMInfer,
         prompt_generator: Optional[PromptGenerator] = None,
+        mirage_prompt_generator: Optional[PromptGenerator] = None,
+        guess_prompt_generator: Optional[PromptGenerator] = None,
         answer_generator: Optional[AnswerGenerator] = None,
         *,
         panel_count: Optional[int] = None,
@@ -348,6 +429,8 @@ class VLMOrderingSolver:
     ) -> None:
         self.vlm_infer = vlm_infer
         self.prompt_generator = prompt_generator or build_ordering_messages
+        self.mirage_prompt_generator = mirage_prompt_generator or build_ordering_messages_mirage
+        self.guess_prompt_generator = guess_prompt_generator or build_ordering_messages_guess
         self.panel_count = panel_count
         if answer_generator is not None:
             self.answer_generator = answer_generator
@@ -370,6 +453,78 @@ class VLMOrderingSolver:
             raise ValueError(f"expected panel_count={self.panel_count}, got {panel_count}")
 
         prompt = self.prompt_generator(panels, texts)
+        raw_output = self.vlm_infer(prompt)
+        order = self.answer_generator(raw_output, panel_count)
+        self._validate(order, panel_count)
+        return VLMOrderingResult(
+            order=list(order),
+            raw_output="" if raw_output is None else str(raw_output),
+            prompt=prompt,
+            panel_count=panel_count,
+            texts=list(texts) if texts is not None else [],
+        )
+
+    def mirage_inference(
+        self,
+        panels: Sequence[PanelImage],
+        texts: TextList = None,
+    ) -> VLMOrderingResult:
+        """Run the same pipeline but withhold the panel images from the model.
+
+        Identical to :meth:`solve` except that the prompt carries no images:
+        the model still receives the task text (and OCR text when supplied),
+        is told nothing about the missing visuals, and its output is decoded and
+        parsed exactly as in normal inference. This isolates how much of a
+        solver's accuracy comes from the images versus the text and layout
+        priors. Panel items are only counted, so placeholders are accepted.
+
+        Falls back to the regular prompt generator (which includes images) when
+        no mirage generator was supplied at construction time.
+        """
+        panels = list(panels)
+        if not panels:
+            raise ValueError("panels must not be empty")
+        panel_count = len(panels)
+        if self.panel_count is not None and panel_count != self.panel_count:
+            raise ValueError(f"expected panel_count={self.panel_count}, got {panel_count}")
+
+        generator = self.mirage_prompt_generator or self.prompt_generator
+        prompt = generator(panels, texts)
+        raw_output = self.vlm_infer(prompt)
+        order = self.answer_generator(raw_output, panel_count)
+        self._validate(order, panel_count)
+        return VLMOrderingResult(
+            order=list(order),
+            raw_output="" if raw_output is None else str(raw_output),
+            prompt=prompt,
+            panel_count=panel_count,
+            texts=list(texts) if texts is not None else [],
+        )
+
+    def guess_inference(
+        self,
+        panels: Sequence[PanelImage],
+        texts: TextList = None,
+    ) -> VLMOrderingResult:
+        """Run the same pipeline without images, telling the model they are absent.
+
+        Behaves like :meth:`mirage_inference` in every respect except the text
+        prompt: the model is explicitly told that no panel images are provided
+        and asked to guess from the text alone. Inference and answer parsing are
+        unchanged. Panel items are only counted, so placeholders are accepted.
+
+        Falls back to the regular prompt generator (which includes images) when
+        no guess generator was supplied at construction time.
+        """
+        panels = list(panels)
+        if not panels:
+            raise ValueError("panels must not be empty")
+        panel_count = len(panels)
+        if self.panel_count is not None and panel_count != self.panel_count:
+            raise ValueError(f"expected panel_count={self.panel_count}, got {panel_count}")
+
+        generator = self.guess_prompt_generator or self.prompt_generator
+        prompt = generator(panels, texts)
         raw_output = self.vlm_infer(prompt)
         order = self.answer_generator(raw_output, panel_count)
         self._validate(order, panel_count)

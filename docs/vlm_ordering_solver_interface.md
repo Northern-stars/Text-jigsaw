@@ -19,6 +19,10 @@ panels (+ 可选 OCR texts)
 
 三者都是普通可调用对象（打平为函数），所以换模型只需替换 `vlm_infer`，换 prompt 只要替换 `prompt_generator`。
 
+除标准 `solve` 外还有 `mirage_inference`：沿用同一条链路，但**不把图片交给模型**，只送同样的文字 prompt（也不提示图像缺失），输出与解析逻辑完全一致，用于衡量模型在无视觉信息下的表现（见 8.3）。
+
+另有 `guess_inference`：与 `mirage_inference` 流程相同，同样不给图片，但**在文字里明确告知模型没有输入图像、让它基于文本猜测**（见 8.4）。
+
 ## 2. 类型约定
 
 | 名称 | 定义 | 说明 |
@@ -62,7 +66,7 @@ panels (+ 可选 OCR texts)
 
 ## 5. 默认 prompt 生成
 
-### 5.1 `build_ordering_text_prompt(panel_count, texts=None, *, start_index=0, ocr_header="OCR text") -> str`
+### 5.1 `build_ordering_text_prompt(panel_count, texts=None, *, start_index=0, ocr_header="OCR text", no_image_note=None) -> str`
 
 生成任务引导文字，措辞对齐现有 Qwen-VL 方案（`mangazero_qwen_vl_*.py` 的 `build_ordering_prompt`）：
 
@@ -70,8 +74,9 @@ panels (+ 可选 OCR texts)
 - 指示依据视觉连续性、阅读流、角色、对白气泡、场景转换推断阅读顺序。
 - 明确要求"以逗号分隔的 panel 编号从先到后输出，不要其它内容"（纯生成式所需，原分类/回归方案是"不要输出顺序，只做内部表示"）。
 - 当 `texts` 非空时，追加 `OCR text:` 块，逐行 `panel <id>: <text>`，跳过空文本。
+- 当 `no_image_note` 非空时，在末尾追加该句（guess 路径用它声明"没有图像"）。
 
-### 5.2 `build_ordering_messages(panels, texts=None, *, start_index=0, system_prompt=None) -> list[dict]`
+### 5.2 `build_ordering_messages(panels, texts=None, *, start_index=0, system_prompt=None, include_images=True, no_image_note=None) -> list[dict]`
 
 默认的 `prompt_generator`，返回 chat 风格 messages：
 
@@ -86,6 +91,16 @@ panels (+ 可选 OCR texts)
 ```
 
 可选 `system_prompt` 会在最前插入 system 回合。图片在前、指令在后，便于 `apply_chat_template` 与 `process_vision_info` 直接消费。
+
+`include_images=False` 时跳过所有图片，只保留任务文字 prompt，用于 mirage 推理（见 5.3）。`no_image_note` 会透传给 `build_ordering_text_prompt`。
+
+### 5.3 `build_ordering_messages_mirage(panels, texts=None, *, start_index=0, system_prompt=None) -> list[dict]`
+
+mirage 推理专用的 prompt generator：**文字 prompt 与 `build_ordering_messages` 完全一致，但不含任何图片**。它只是把 `include_images=False` 传给 `build_ordering_messages`，因此不会解码 panel，也不提示模型"图像缺失"。注意它仍按 `len(panels)` 生成"共 N 个编号 panel"的表述，调用方可传占位对象代替真实图片。
+
+### 5.4 `build_ordering_messages_guess(panels, texts=None, *, start_index=0, system_prompt=None, no_image_note=GUESS_NO_IMAGE_NOTE) -> list[dict]`
+
+guess 推理专用的 prompt generator：同样不含图片，但在文字 prompt 末尾**明确追加一句"没有提供 panel 图像"**（默认 `GUESS_NO_IMAGE_NOTE`），并要求模型据文本猜测最可能的阅读顺序。它等价于 `build_ordering_messages(include_images=False, no_image_note=...)`，其余任务引导文字与正常推理一致，不解码 panel。
 
 ## 6. 默认答案解析
 
@@ -121,6 +136,8 @@ panels (+ 可选 OCR texts)
 | --- | --- | --- |
 | `vlm_infer` | 必填 | 推理后端。 |
 | `prompt_generator` | `build_ordering_messages` | prompt 组装。 |
+| `mirage_prompt_generator` | `build_ordering_messages_mirage` | mirage 推理的 prompt 组装（同样的文字、不含图片）。 |
+| `guess_prompt_generator` | `build_ordering_messages_guess` | guess 推理的 prompt 组装（不含图片，并声明没有图像）。 |
 | `answer_generator` | `parse_ordering_answer` 包装 | 答案解析。 |
 | `panel_count` | `None` | 期望 panel 数；设定后不符会抛错。 |
 | `one_indexed` | `False` | 传给默认答案解析。 |
@@ -136,7 +153,37 @@ panels (+ 可选 OCR texts)
 6. `_validate(order, panel_count)`：必须是完整排列，否则抛 `ValueError`。
 7. 返回 `VLMOrderingResult`。
 
-### 8.3 `train(...)` 抽象方法
+### 8.3 `mirage_inference(panels, texts=None) -> VLMOrderingResult`
+
+"海市蜃楼"式推理，用于探测模型在**看不到图片**时能靠文字先验走多远。与 `solve` 完全一致，唯一区别是给模型的 prompt 不携带任何图片：仍然照常组装任务文字 prompt（有 OCR 文本时一并给出），**不提示模型图像缺失**，取模型输出、解析答案、校验排列的逻辑与正常推理没有任何差别。
+
+1. `panels` 转 list，空则抛 `ValueError`。
+2. 校验 `panel_count` 一致性。
+3. `prompt = mirage_prompt_generator(panels, texts)`（默认即 5.3，同样的文字、无图片；`panels` 只用于计数，可为占位对象）。
+4. `raw = vlm_infer(prompt)`。
+5. `order = answer_generator(raw, panel_count)`。
+6. `_validate(order, panel_count)`。
+7. 返回 `VLMOrderingResult`。
+
+当构造时未提供 `mirage_prompt_generator` 时会回退到 `prompt_generator`（含图片），此时该方法退化为普通 `solve`。
+
+### 8.4 `guess_inference(panels, texts=None) -> VLMOrderingResult`
+
+与 `mirage_inference` 流程一致（同样不给模型图片），唯一区别在文字 prompt：**明确告知模型"没有提供图像"并要求其据文本猜测最可能的顺序**。取模型输出、解析答案、校验排列的逻辑与正常推理完全相同。
+
+1. `panels` 转 list，空则抛 `ValueError`。
+2. 校验 `panel_count` 一致性。
+3. `prompt = guess_prompt_generator(panels, texts)`（默认即 5.4，不含图片且带"无图像"说明；`panels` 只用于计数，可为占位对象）。
+4. `raw = vlm_infer(prompt)`。
+5. `order = answer_generator(raw, panel_count)`。
+6. `_validate(order, panel_count)`。
+7. 返回 `VLMOrderingResult`。
+
+当构造时未提供 `guess_prompt_generator` 时会回退到 `prompt_generator`（含图片），此时该方法退化为普通 `solve`。
+
+与 `mirage_inference` 的差异只有 prompt 文字：mirage 不提及图像缺失（考察模型的隐式先验），guess 显式说明没有图像（考察模型被"告知无图"时的表现）。
+
+### 8.5 `train(...)` 抽象方法
 
 ```
 train(batches, *, epochs=1, optimizer=None, device=None,
@@ -146,7 +193,7 @@ train(batches, *, epochs=1, optimizer=None, device=None,
 - 基类默认 `raise NotImplementedError`：通用 prompt/infer/answer 路径是**纯推理**的，训练由子类实现。
 - 约定 `batches` 为 batch 可迭代对象（或"按 epoch 返回可迭代对象"的可调用对象），batch 含 `panel_images`、`target_order`，可选 `dialog_texts`。返回至少含 `{"loss": ...}` 的指标字典。
 
-### 8.4 `_validate(order, panel_count)`
+### 8.6 `_validate(order, panel_count)`
 
 静态方法，校验 `order` 是 `0..panel_count-1` 的排列。
 
@@ -165,6 +212,8 @@ train(batches, *, epochs=1, optimizer=None, device=None,
 3. 调 `super().__init__`，其中：
    - `vlm_infer = QwenVLInfer(self.backbone, self.processor, max_new_tokens, generation_kwargs)`；
    - `prompt_generator = self._default_prompt_generator`（除非外部传入）；
+   - `mirage_prompt_generator = self._default_mirage_prompt_generator`（除非外部传入）；
+   - `guess_prompt_generator = self._default_guess_prompt_generator`（除非外部传入）；
    - `answer_generator` 交由基类按 `strict_answer` 生成；
    - `one_indexed = bool(start_index)`：用 `start_index` 同时控制 prompt 编号与答案解析的 1-index 偏移。
 
@@ -172,15 +221,23 @@ train(batches, *, epochs=1, optimizer=None, device=None,
 
 直接调用 `build_ordering_messages(panels, texts, start_index=self.start_index)`，即基类的默认 prompt 组装，把每个 panel 转 PIL 后与任务指令拼成 messages。
 
-### 9.3 `_chat_messages(panels, texts, order=None)`
+### 9.3 `_default_mirage_prompt_generator(panels, texts)`
+
+对应 mirage 路径：调用 `build_ordering_messages_mirage(panels, texts, start_index=self.start_index)`，文字与正常推理完全一致（含 OCR 块），只省去所有图片。因此该类的 `mirage_inference` 在传给 processor 时 `images=None`（经 stub 验证），模型的 generate/parse/validate 链路与 `solve` 复用同一条。
+
+### 9.4 `_default_guess_prompt_generator(panels, texts)`
+
+对应 guess 路径：调用 `build_ordering_messages_guess(panels, texts, start_index=self.start_index)`，同样不含图片，并在文字 prompt 末尾追加"没有提供图像"的说明。该类 `guess_inference` 传给 processor 的 `images=None`，其余链路与 `solve` 复用同一条。
+
+### 9.5 `_chat_messages(panels, texts, order=None)`
 
 训练专用：先取 `prompt_generator(panels, texts)` 得到 user 消息；若给了 `order`，追加一条 assistant 消息，内容为 `format_order_label(order)`，即标签字符串 `2, 0, 1, 3`。这是"标签 = 正确排序字符串"的落点。
 
-### 9.4 `_encode_messages(messages)`
+### 9.6 `_encode_messages(messages)`
 
 把完整会话（含 assistant 标签）编码为模型输入：`apply_chat_template(tokenize=False, add_generation_prompt=False)`，有 `qwen_vl_utils` 时用 `process_vision_info` 取图，`process` 返回 `return_tensors="pt"` 的 `input_ids` 等。
 
-### 9.5 `compute_loss(panel_images, dialog_texts=None, target_order=None) -> Tensor`
+### 9.7 `compute_loss(panel_images, dialog_texts=None, target_order=None) -> Tensor`
 
 每个样本独立编码（因 Qwen-VL 图像 token 变长，逐样本编码最稳）：
 
@@ -190,7 +247,7 @@ train(batches, *, epochs=1, optimizer=None, device=None,
 4. `self.backbone(**full_inputs, labels=labels)` 取 `outputs.loss`。
 5. 对 batch 内各样本 loss 取均值。
 
-### 9.6 `train(...)`
+### 9.8 `train(...)`
 
 实现基类抽象方法：
 
@@ -203,16 +260,16 @@ train(batches, *, epochs=1, optimizer=None, device=None,
 
 `_trainable_parameters()` 返回 `backbone` 中 `requires_grad=True` 的参数，即 LoRA 适配器参数。
 
-### 9.7 `solve(panels, texts=None)`
+### 9.9 `solve(panels, texts=None)`
 
 覆写并加 `@torch.no_grad()`：先 `backbone.eval()`，再调 `super().solve(...)`，即复用基类的 prompt -> infer -> answer 全链路。因为后端是 `QwenVLInfer`，这里就是"生成排序文本 -> `parse_ordering_answer` 解析成排列"。
 
-### 9.8 检查点：`trainable_state_dict` / `load_trainable_state_dict`
+### 9.10 检查点：`trainable_state_dict` / `load_trainable_state_dict`
 
 - `trainable_state_dict()`：优先 `peft.get_peft_model_state_dict`，无 peft 时回退取名字含 `lora_` 的权重，返回 `{"backbone": <LoRA 权重>, "model_name": ...}`。只存 LoRA adapter，不存 3B 全量权重。
 - `load_trainable_state_dict(state_dict)`：优先 `set_peft_model_state_dict`，否则 `load_state_dict(strict=False)`。
 
-### 9.9 `format_order_label` 与 `common_prefix_length`
+### 9.11 `format_order_label` 与 `common_prefix_length`
 
 - `format_order_label(order, *, start_index=0)`：把排列渲染为 `", ".join(...)`，例如 `[2,0,1,3] -> "2, 0, 1, 3"`，是训练标签字符串的唯一来源。
 - `common_prefix_length(prefix, full)`：逐 token 比较两段序列，返回公共前缀长度，用于 label mask。
@@ -244,11 +301,27 @@ metrics = solver.train(loader, epochs=3, grad_accum_steps=8, grad_clip_norm=1.0,
 
 对接数据集时，`panels` 直接传 `dataset[i]["panels"]`，`texts` 传 `dataset[i]["dialog_texts"]`（两者字段含义见 panel_ordering_fields.md）。
 
+mirage 推理（只给文字、不给图，用于评估纯文本先验的上限）：
+
+```python
+mirage = solver.mirage_inference(panels, texts=None)
+print(mirage.order, mirage.raw_output)   # 与 solve 同样返回 VLMOrderingResult
+```
+
+guess 推理（不给图，并明确告知模型没有输入图像）：
+
+```python
+guess = solver.guess_inference(panels, texts=None)
+print(guess.order, guess.raw_output)
+```
+
 ## 11. 扩展新 VLM
 
 继承 `VLMOrderingSolver`，在 `__init__` 里把新后端包装成 `vlm_infer` 调 `super().__init__`，并按需覆写：
 
 - `prompt_generator`：若该 VLM 的图文顺序/模板不同，改这里。
+- `mirage_prompt_generator`：若该 VLM 的无图 prompt 组装方式不同，改这里；缺省用基类的纯文字版。
+- `guess_prompt_generator`：若该 VLM 声明"无图"的措辞不同，改这里；缺省用基类的默认提示。
 - `answer_generator`：若输出格式不同，改这里。
 - `train`：接入该 VLM 的微调方式（LoRA/全参），返回 `{"loss": ...}`。
 

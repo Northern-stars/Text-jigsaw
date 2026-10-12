@@ -22,6 +22,8 @@ from Solver.agent.vlm_ordering_solver import (
     QwenVLInfer,
     VLMOrderingSolver,
     build_ordering_messages,
+    build_ordering_messages_guess,
+    build_ordering_messages_mirage,
     parse_torch_dtype,
     to_pil,
 )
@@ -86,6 +88,8 @@ class QwenVLOrderingSolver(VLMOrderingSolver):
         generation_kwargs: Optional[dict[str, Any]] = None,
         strict_answer: bool = True,
         prompt_generator: Any = None,
+        mirage_prompt_generator: Any = None,
+        guess_prompt_generator: Any = None,
         answer_generator: Any = None,
     ) -> None:
         self.model_name = model_name
@@ -162,6 +166,8 @@ class QwenVLOrderingSolver(VLMOrderingSolver):
                 generation_kwargs=generation_kwargs,
             ),
             prompt_generator=prompt_generator or self._default_prompt_generator,
+            mirage_prompt_generator=mirage_prompt_generator or self._default_mirage_prompt_generator,
+            guess_prompt_generator=guess_prompt_generator or self._default_guess_prompt_generator,
             answer_generator=answer_generator,
             panel_count=panel_count,
             one_indexed=bool(self.start_index),
@@ -174,6 +180,12 @@ class QwenVLOrderingSolver(VLMOrderingSolver):
 
     def _default_prompt_generator(self, panels: Sequence[Any], texts: Any) -> list[dict[str, Any]]:
         return build_ordering_messages(panels, texts, start_index=self.start_index)
+
+    def _default_mirage_prompt_generator(self, panels: Sequence[Any], texts: Any) -> list[dict[str, Any]]:
+        return build_ordering_messages_mirage(panels, texts, start_index=self.start_index)
+
+    def _default_guess_prompt_generator(self, panels: Sequence[Any], texts: Any) -> list[dict[str, Any]]:
+        return build_ordering_messages_guess(panels, texts, start_index=self.start_index)
 
     def _chat_messages(
         self,
