@@ -238,6 +238,9 @@ def create_manga109_ordering(
     panel_count: int = 6,
     stride: int = 1,
     puzzle_num: int = 200,
+    train_puzzles: int = 0,
+    val_puzzles: int = 0,
+    test_puzzles: int = 0,
     target_width: int = 224,
     target_height: int = 224,
     min_frames: int = 3,
@@ -302,7 +305,17 @@ def create_manga109_ordering(
 
     print(f"Found {len(page_candidates)} pages with >= {min_frames} frames across {len(book_names)} books")
 
-    # Generate puzzle samples via sliding window
+    from dataset_split_utils import SplitBudget, SplitManifests, resolve_split_counts
+
+    train_q, val_q, test_q = resolve_split_counts(
+        argparse.Namespace(puzzle_num=puzzle_num, train_puzzles=train_puzzles, val_puzzles=val_puzzles, test_puzzles=test_puzzles),
+        default_puzzle_num=puzzle_num,
+    )
+    budget = SplitBudget(train=train_q, val=val_q, test=test_q)
+    manifests = SplitManifests(output_dir)
+
+    # Generate puzzle samples via sliding window.  Each page belongs to one
+    # split; when the active split quota is exhausted we move to the next one.
     puzzle_count = 0
     manifest_entries: list[dict[str, Any]] = []
     skipped_windows = 0
@@ -312,7 +325,10 @@ def create_manga109_ordering(
         page_iter = tqdm(page_candidates, desc="generating puzzles", unit="page", dynamic_ncols=True)
 
     for book_name, page_info, image_path in page_iter:
-        if puzzle_count >= puzzle_num:
+        if budget.done:
+            break
+        split_name = budget.active_split
+        if split_name is None:
             break
 
         frames = list(page_info["frames"])
@@ -332,9 +348,12 @@ def create_manga109_ordering(
         with Image.open(image_path) as full_img:
             full_img = full_img.convert("RGB")
 
-        # Sliding window with configurable stride
+        # Sliding window with configurable stride.  The page is assigned to the
+        # active split; if its quota is already exhausted we stop using it.
         for start in range(0, len(ordered_frames) - panel_count + 1, stride):
-            if puzzle_count >= puzzle_num:
+            if budget.done or puzzle_count >= puzzle_num:
+                break
+            if budget.remaining <= 0:
                 break
 
             window = ordered_frames[start : start + panel_count]
@@ -417,17 +436,28 @@ def create_manga109_ordering(
             with (puzzle_dir / "sample.json").open("w", encoding="utf-8") as f:
                 json.dump(sample, f, ensure_ascii=False, indent=2)
 
-            manifest_entries.append({
+            entry = {
                 "sequence_id": sample["sequence_id"],
                 "sample_path": f"{puzzle_count:06d}/sample.json",
                 "manga_id": book_name,
                 "page_index": page_idx,
                 "panel_count": panel_count,
-            })
-
+                "page_key": sample["page_key"],
+            }
+            manifest_entries.append(entry)
+            manifests.write(split_name, entry)
+            manifests.flush()
+            budget.add(1)
             puzzle_count += 1
+            # This page belongs to one split only.  Once the active split
+            # changes (quota filled), stop using this page and let the next
+            # page start the new split.
+            if budget.active_split != split_name:
+                break
 
-    # Write manifest.jsonl
+    manifests.close()
+
+    # Also write the combined manifest for legacy consumers.
     manifest_path = output_dir / "manifest.jsonl"
     with manifest_path.open("w", encoding="utf-8") as f:
         for entry in manifest_entries:
@@ -435,6 +465,7 @@ def create_manga109_ordering(
 
     stats = {
         "puzzle_count": puzzle_count,
+        "split_counts": budget.totals,
         "skipped_windows": skipped_windows,
         "pages_with_frames": len(page_candidates),
         "books_scanned": len(book_names),
@@ -465,7 +496,10 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--panel-count", type=int, default=6, help="Panels per sample (sliding window size).")
     p.add_argument("--stride", type=int, default=1, help="Sliding window step between puzzle samples. Default 1 means full overlap; larger values reduce overlap.")
-    p.add_argument("--puzzle-num", type=int, default=200, help="Maximum number of puzzle samples.")
+    p.add_argument("--puzzle-num", type=int, default=200, help="Fallback train puzzle count when train_puzzles is 0.")
+    p.add_argument("--train-puzzles", type=int, default=0, help="Exact train puzzle count (0 uses puzzle_num).")
+    p.add_argument("--val-puzzles", type=int, default=0, help="Exact val puzzle count.")
+    p.add_argument("--test-puzzles", type=int, default=0, help="Exact test puzzle count.")
     p.add_argument("--target-width", type=int, default=224, help="Padded panel image width.")
     p.add_argument("--target-height", type=int, default=224, help="Padded panel image height.")
     p.add_argument("--min-frames", type=int, default=3, help="Minimum frames on a page to include it.")
@@ -501,6 +535,9 @@ def main() -> None:
         panel_count=args.panel_count,
         stride=args.stride,
         puzzle_num=args.puzzle_num,
+        train_puzzles=args.train_puzzles,
+        val_puzzles=args.val_puzzles,
+        test_puzzles=args.test_puzzles,
         target_width=args.target_width,
         target_height=args.target_height,
         min_frames=args.min_frames,

@@ -82,6 +82,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-width", type=int, default=224)
     parser.add_argument("--target-height", type=int, default=224)
     parser.add_argument("--puzzle-num", type=int, default=500)
+    parser.add_argument("--train-puzzles", type=int, default=0, help="Exact train puzzle count (0 uses puzzle_num).")
+    parser.add_argument("--val-puzzles", type=int, default=0, help="Exact val puzzle count.")
+    parser.add_argument("--test-puzzles", type=int, default=0, help="Exact test puzzle count.")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--disable-ocr", action="store_true")
     parser.add_argument("--skip-network-errors", action="store_true", default=True)
@@ -140,6 +143,10 @@ def main() -> None:
     output_dir = args.output_dir
     raw_dir = args.raw_dir
     output_dir.mkdir(parents=True, exist_ok=True)
+    from dataset_split_utils import SplitBudget, SplitManifests, resolve_split_counts
+    train_q, val_q, test_q = resolve_split_counts(args, default_puzzle_num=args.puzzle_num)
+    budget = SplitBudget(train=train_q, val=val_q, test=test_q)
+    split_manifests = SplitManifests(output_dir)
 
     ocr = None if args.disable_ocr else build_ocr_engine(args)
     try:

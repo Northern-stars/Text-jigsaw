@@ -95,6 +95,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-height", type=int, default=224)
     parser.add_argument("--max-pages", type=int, default=None)
     parser.add_argument("--puzzle-num", type=int, default=500)
+    parser.add_argument("--train-puzzles", type=int, default=0, help="Exact train puzzle count (0 uses puzzle_num).")
+    parser.add_argument("--val-puzzles", type=int, default=0, help="Exact val puzzle count.")
+    parser.add_argument("--test-puzzles", type=int, default=0, help="Exact test puzzle count.")
     parser.add_argument("--streaming", action="store_true", default=True)
     parser.add_argument("--no-streaming", action="store_false", dest="streaming")
     parser.add_argument("--trust-remote-code", action="store_true")
@@ -153,6 +156,10 @@ def main() -> None:
     output_dir = args.output_dir
     page_cache_dir = args.cache_dir / "pages"
     output_dir.mkdir(parents=True, exist_ok=True)
+    from dataset_split_utils import SplitBudget, SplitManifests, resolve_split_counts
+    train_q, val_q, test_q = resolve_split_counts(args, default_puzzle_num=args.puzzle_num)
+    budget = SplitBudget(train=train_q, val=val_q, test=test_q)
+    split_manifests = SplitManifests(output_dir)
     page_cache_dir.mkdir(parents=True, exist_ok=True)
 
     ocr = None if args.disable_ocr else build_ocr_engine(args)
@@ -172,6 +179,8 @@ def main() -> None:
         manifest_path = output_dir / "manifest.jsonl"
         manifest_handle = manifest_path.open("w", encoding="utf-8")
         for sample in dataset_iterable:
+            if budget.done:
+                break
             set_progress_status(progress_bar, "读取样本")
             prepared_panels = process_sample(
                 sample=sample,
@@ -190,6 +199,11 @@ def main() -> None:
             page_group_count += len(page_groups)
             panel_count_total += len(prepared_panels)
             for page_key, page_panels in page_groups.items():
+                if budget.done:
+                    break
+                split_name = budget.active_split
+                if split_name is None:
+                    break
                 page_panels.sort(key=lambda panel: panel.record.panel_index_in_page)
                 if getattr(args, "sort_panels_reading_order", False):
                     page_panels = sort_prepared_panels_reading_order(
@@ -197,13 +211,15 @@ def main() -> None:
                         rtl=getattr(args, "reading_order_rtl", True),
                     )
                 for start in range(0, len(page_panels), args.stride):
-                    if puzzle_count >= args.puzzle_num:
+                    if budget.done or puzzle_count >= args.puzzle_num:
                         break
                     if start + args.panel_count > len(page_panels):
                         continue
                     window = page_panels[start:start + args.panel_count]
                     for _ in range(args.shuffle_per_window):
-                        if puzzle_count >= args.puzzle_num:
+                        if budget.done or puzzle_count >= args.puzzle_num:
+                            break
+                        if budget.remaining <= 0:
                             break
                         set_progress_status(progress_bar, f"写入puzzle {puzzle_count + 1}/{args.puzzle_num}")
                         sample_json = write_puzzle_directory(
@@ -216,13 +232,20 @@ def main() -> None:
                             image_format=args.image_format,
                             rng=rng,
                         )
-                        manifest_handle.write(json.dumps({
+                        entry = {
                             "puzzle_index": puzzle_count,
                             "sequence_id": sample_json["sequence_id"],
                             "sample_path": f"{puzzle_count:06d}/sample.json",
-                        }, ensure_ascii=False) + "\n")
+                            "page_key": page_key,
+                        }
+                        manifest_handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                        split_manifests.write(split_name, entry)
+                        split_manifests.flush()
+                        budget.add(1)
                         manifest_handle.flush()
                         puzzle_count += 1
+                        if budget.active_split != split_name:
+                            break
             set_progress_status(progress_bar, "等待下一页")
             if puzzle_count >= args.puzzle_num:
                 break
