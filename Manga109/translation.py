@@ -229,6 +229,12 @@ class HFCausalSugoiTranslator:
         torch_dtype = getattr(torch, dtype) if dtype in ("bfloat16", "float16", "float32") else torch.float32
 
         self.tokenizer = AutoTokenizer.from_pretrained(str(source), local_files_only=True)
+        # Decoder-only generation requires left padding so that every sequence
+        # in a batch starts at the same position and continues from the real
+        # last prompt token instead of trailing [PAD] tokens.
+        self.tokenizer.padding_side = "left"
+        if self.tokenizer.pad_token_id is None and self.tokenizer.eos_token_id is not None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = AutoModelForCausalLM.from_pretrained(
             str(source),
             torch_dtype=torch_dtype,
@@ -279,11 +285,11 @@ class HFCausalSugoiTranslator:
                 pad_token_id=self.tokenizer.pad_token_id,
             )
 
+        # With left padding every row shares the same prompt length, so the
+        # generated tokens always start at input_ids.shape[1].
+        prompt_len = inputs["input_ids"].shape[1]
         results: list[str] = []
-        for prompt_len, output in zip(
-            [len(self.tokenizer(prompt)["input_ids"]) for prompt in prompts],
-            outputs,
-        ):
+        for output in outputs:
             generated = output[prompt_len:]
             results.append(
                 self.tokenizer.decode(generated, skip_special_tokens=True).strip()
