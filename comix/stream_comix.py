@@ -149,6 +149,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ocr-use-angle-cls", action="store_true")
     parser.add_argument("--ocr-enable-pir", action="store_true")
     parser.add_argument("--ocr-enable-mkldnn", action="store_true")
+    parser.add_argument("--ocr-enhance-pad", type=float, default=0.05, help="Textbox crop padding ratio (0 disables).")
+    parser.add_argument("--ocr-enhance-upscale", action="store_true", help="Upscale textbox crops before OCR.")
+    parser.add_argument("--ocr-enhance-rotate", action="store_true", help="Try rotated crops and keep best text.")
 
     parser.add_argument(
         "--sort-panels-reading-order",
@@ -586,7 +589,12 @@ def process_comix_sample(
                 content = str(tb.get("content") or tb.get("text") or "")
             if not content and ocr is not None:
                 try:
-                    crop = page_image.crop(tb_bbox).convert("RGB")
+                    pad_ratio = float(getattr(ocr, "crop_pad_ratio", 0.0) or 0.0)
+                    if pad_ratio > 0.0:
+                        from Mangazero.ocr_enhance import crop_with_padding
+                        crop = crop_with_padding(page_image, tb_bbox, padding_ratio=pad_ratio, min_padding=2)
+                    else:
+                        crop = page_image.crop(tb_bbox).convert("RGB")
                     content = recognize_dialog_text(
                         crop, ocr,
                         skip_errors=skip_ocr_errors,
@@ -761,28 +769,21 @@ def _split_group_key(group_key: str) -> tuple[str, str]:
 
 
 def _build_ocr_engine(args: argparse.Namespace):
-    """Build PaddleOCR engine (same as Mangazero/build_dataset.py)."""
-    import os
-    if not args.ocr_enable_pir:
-        os.environ["FLAGS_enable_pir_in_executor"] = "0"
-    if not args.ocr_enable_mkldnn:
-        os.environ["FLAGS_use_mkldnn"] = "0"
-        os.environ["FLAGS_use_onednn"] = "0"
-        os.environ["FLAGS_tracer_onednn_ops_on"] = ""
-    try:
-        from paddleocr import PaddleOCR
-    except ImportError as exc:
-        raise ImportError(
-            "PaddleOCR is required unless --disable-ocr is set."
-        ) from exc
-    return PaddleOCR(
-        lang=args.ocr_lang,
-        ocr_version=args.ocr_version,
-        device=args.ocr_device,
-        use_doc_orientation_classify=False,
-        use_doc_unwarping=False,
-        use_textline_orientation=args.ocr_use_angle_cls,
-    )
+    """Build the enhanced OCR engine shared with Mangazero.
+
+    Reuses Mangazero.build_dataset's engine so padding/upscale/rotation
+    parameters flow through the same code path used by MangaZero.
+    """
+    from Mangazero.build_dataset import build_ocr_engine as base_build_ocr_engine
+    if not hasattr(args, "debug_ocr"):
+        args.debug_ocr = False
+    if not hasattr(args, "ocr_enhance_pad"):
+        args.ocr_enhance_pad = 0.05
+    if not hasattr(args, "ocr_enhance_upscale"):
+        args.ocr_enhance_upscale = False
+    if not hasattr(args, "ocr_enhance_rotate"):
+        args.ocr_enhance_rotate = False
+    return base_build_ocr_engine(args)
 
 
 # ---------------------------------------------------------------------------

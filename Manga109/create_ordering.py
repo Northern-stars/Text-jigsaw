@@ -32,6 +32,7 @@ import argparse
 import json
 import random
 import re
+import sys
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -245,6 +246,12 @@ def create_manga109_ordering(
     rtl: bool = True,
     books: list[str] | None = None,
     seed: int = 0,
+    translation_engine: str = "none",
+    translation_model: str = "mHagos/sugoi-4-japanese-to-english-translator",
+    translation_device: str = "cuda",
+    translation_dtype: str = "bfloat16",
+    translation_cache: Path | None = None,
+    translation_batch_size: int = 8,
 ) -> dict[str, Any]:
     """Create panel-ordering puzzle samples from Manga109.
 
@@ -257,6 +264,19 @@ def create_manga109_ordering(
     images_dir = manga109_dir / "images"
     output_dir.mkdir(parents=True, exist_ok=True)
     rng = random.Random(seed)
+
+    from Manga109.translation import build_translator, translate_text_map
+
+    translator = None
+    if translation_engine != "none":
+        translator = build_translator(
+            translation_engine=translation_engine,
+            model_name=translation_model,
+            device=translation_device,
+            dtype=translation_dtype,
+            cache_path=translation_cache,
+            batch_size=translation_batch_size,
+        )
 
     if books:
         book_names = books
@@ -302,7 +322,8 @@ def create_manga109_ordering(
         page_idx = int(page_info["index"])
 
         # Assign text to frames
-        text_map = assign_texts_to_frames(texts, frames, min_text_overlap)
+        source_map = assign_texts_to_frames(texts, frames, min_text_overlap)
+        text_map = translate_text_map(source_map, translator) if translator is not None else source_map
 
         # Sort frames in reading order
         ordered_frames = sort_frames_reading_order(frames, page_h, rtl=rtl)
@@ -343,7 +364,8 @@ def create_manga109_ordering(
                 padded_img, pad = pad_image_to_target(crop, (target_width, target_height))
                 padded_img.save(padded_dir / padded_name)
 
-                dialog_text = text_map.get(frame["id"], "")
+                source_text = source_map.get(frame["id"], "")
+                dialog_text = text_map.get(frame["id"], source_text)
 
                 shuffled_panels.append({
                     "panel_id": f"p{page_idx:04d}_f{original_idx}",
@@ -364,6 +386,8 @@ def create_manga109_ordering(
                     "dialog_bboxes": [],
                     "dialog_texts": [dialog_text] if dialog_text else [],
                     "dialog_text": dialog_text,
+                    "source_text": source_text,
+                    "translated_text": dialog_text if translator is not None else "",
                     "character_ids": [],
                     "character_bboxes": [],
                     "character_types": [],
@@ -387,7 +411,7 @@ def create_manga109_ordering(
                 "panels": shuffled_panels,
                 "input_order": input_order,
                 "target_order": target_order,
-                "text_source": "dialog_text",
+                "text_source": "xml_translated" if translator is not None else "xml_original",
             }
 
             with (puzzle_dir / "sample.json").open("w", encoding="utf-8") as f:
@@ -451,6 +475,21 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-rtl", action="store_false", dest="rtl")
     p.add_argument("--books", nargs="*", help="Process only these book titles.")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument(
+        "--translation-engine",
+        default="none",
+        choices=("none", "sugoi"),
+        help="Translation engine for XML dialog text. none keeps the original Japanese.",
+    )
+    p.add_argument(
+        "--translation-model",
+        default="mHagos/sugoi-4-japanese-to-english-translator",
+        help="Sugoi model name for ja->en translation.",
+    )
+    p.add_argument("--translation-device", default="cuda")
+    p.add_argument("--translation-dtype", default="bfloat16", choices=("float16", "bfloat16", "float32"))
+    p.add_argument("--translation-cache", type=Path, default=None, help="Path for translation JSONL cache.")
+    p.add_argument("--translation-batch-size", type=int, default=8)
     return p.parse_args()
 
 
@@ -470,6 +509,12 @@ def main() -> None:
         rtl=args.rtl,
         books=args.books,
         seed=args.seed,
+        translation_engine=args.translation_engine,
+        translation_model=args.translation_model,
+        translation_device=args.translation_device,
+        translation_dtype=args.translation_dtype,
+        translation_cache=args.translation_cache,
+        translation_batch_size=args.translation_batch_size,
     )
 
 

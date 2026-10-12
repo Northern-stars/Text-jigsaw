@@ -114,6 +114,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ocr-use-angle-cls", action="store_true")
     parser.add_argument("--ocr-enable-pir", action="store_true")
     parser.add_argument("--ocr-enable-mkldnn", action="store_true")
+    parser.add_argument("--ocr-enhance-pad", type=float, default=0.05, help="Textbox crop padding ratio (0 disables).")
+    parser.add_argument("--ocr-enhance-upscale", action="store_true", help="Upscale textbox crops before OCR.")
+    parser.add_argument("--ocr-enhance-rotate", action="store_true", help="Try rotated crops and keep best text.")
     parser.add_argument("--image-format", default="jpg", choices=("jpg", "png"))
     parser.add_argument(
         "--sort-panels-reading-order",
@@ -281,15 +284,27 @@ def set_progress_status(progress: Any | None, status: str) -> None:
 
 class InlineOCREngine:
     def __init__(self, args: argparse.Namespace) -> None:
+        self.crop_pad_ratio = float(getattr(args, "ocr_enhance_pad", 0.0) or 0.0)
+        self.with_upscale = bool(getattr(args, "ocr_enhance_upscale", False))
+        self.with_rotations = bool(getattr(args, "ocr_enhance_rotate", False))
         self.ocr = build_paddle_ocr(args)
 
     def recognize(self, image: Image.Image, context: str = "") -> str:
-        return run_dialog_ocr_inline(image, self.ocr)
+        if not (self.with_upscale or self.with_rotations):
+            return run_dialog_ocr_inline(image, self.ocr)
+        from Mangazero.ocr_enhance import run_ocr_variants
+        return run_ocr_variants(
+            image,
+            recognizers=[lambda im: run_dialog_ocr_inline(im, self.ocr)],
+            with_upscale=self.with_upscale,
+            with_rotations=self.with_rotations,
+        )
 
 
 class SubprocessOCREngine:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
+        self.crop_pad_ratio = float(getattr(args, "ocr_enhance_pad", 0.0) or 0.0)
         self.timeout = args.ocr_timeout
         self.max_restarts = args.ocr_max_restarts
         self.restart_count = 0
@@ -360,6 +375,9 @@ def ocr_worker_config(args: argparse.Namespace) -> dict[str, Any]:
         "ocr_use_angle_cls": args.ocr_use_angle_cls,
         "ocr_enable_pir": args.ocr_enable_pir,
         "ocr_enable_mkldnn": args.ocr_enable_mkldnn,
+        "ocr_enhance_pad": getattr(args, "ocr_enhance_pad", 0.0),
+        "ocr_enhance_upscale": getattr(args, "ocr_enhance_upscale", False),
+        "ocr_enhance_rotate": getattr(args, "ocr_enhance_rotate", False),
     }
 
 
@@ -378,7 +396,7 @@ def ocr_worker_main(config: dict[str, Any], request_queue: mp.Queue, response_qu
         context, image_bytes = item
         try:
             image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-            text = run_dialog_ocr_inline(image, ocr)
+            text = run_dialog_ocr_enhanced(image, ocr, args)
             response_queue.put(("ok", text))
         except Exception as exc:
             response_queue.put(("error", f"{type(exc).__name__}: {exc}"))
@@ -483,17 +501,24 @@ def process_sample(
 
         dialog_bboxes = [clamp_bbox([int(value) for value in dialog["bbox"]], page_width, page_height)
                          for dialog in frame.get("dialogs", [])]
-        dialog_texts = [
-            recognize_dialog_text(
-                page_image.crop(dialog_bbox).convert("RGB"),
-                ocr,
-                skip_errors=skip_ocr_errors,
-                context=f"{panel_id} dialog {dialog_index}",
-                progress=progress,
-                progress_status=f"OCR panel {panel_index + 1}/{len(sample.get('frames', []))} dialog {dialog_index + 1}/{len(dialog_bboxes)}",
+        pad_ratio = float(getattr(ocr, "crop_pad_ratio", 0.0) or 0.0)
+        dialog_texts = []
+        for dialog_index, dialog_bbox in enumerate(dialog_bboxes):
+            if pad_ratio > 0.0:
+                from Mangazero.ocr_enhance import crop_with_padding
+                crop_image = crop_with_padding(page_image, dialog_bbox, padding_ratio=pad_ratio, min_padding=2)
+            else:
+                crop_image = page_image.crop(dialog_bbox).convert("RGB")
+            dialog_texts.append(
+                recognize_dialog_text(
+                    crop_image,
+                    ocr,
+                    skip_errors=skip_ocr_errors,
+                    context=f"{panel_id} dialog {dialog_index}",
+                    progress=progress,
+                    progress_status=f"OCR panel {panel_index + 1}/{len(sample.get('frames', []))} dialog {dialog_index + 1}/{len(dialog_bboxes)}",
+                )
             )
-            for dialog_index, dialog_bbox in enumerate(dialog_bboxes)
-        ]
         dialog_text = " ".join(text for text in dialog_texts if text).strip()
 
         characters = frame.get("characters", [])
@@ -702,6 +727,26 @@ def recognize_dialog_text(
     except Exception as exc:
         return handle_ocr_error(exc, skip_errors, context)
 
+
+def run_dialog_ocr_enhanced(image: Image.Image, ocr: Any | None, args: argparse.Namespace) -> str:
+    """Apply upscale/rotation variants before calling the base OCR recognizer."""
+    if ocr is None:
+        return ""
+    upscale = bool(getattr(args, "ocr_enhance_upscale", False))
+    rotate = bool(getattr(args, "ocr_enhance_rotate", False))
+    if not (upscale or rotate):
+        return run_dialog_ocr_inline(image, ocr)
+    from Mangazero.ocr_enhance import run_ocr_variants
+
+    def _call(im: Image.Image) -> str:
+        return run_dialog_ocr_inline(im, ocr)
+
+    return run_ocr_variants(
+        image,
+        recognizers=[_call],
+        with_upscale=upscale,
+        with_rotations=rotate,
+    )
 
 def run_dialog_ocr_inline(
     image: Image.Image,
