@@ -163,7 +163,6 @@ def parse_args(mode: str = "all") -> argparse.Namespace:
         )
         parser.add_argument("--ocr-device", default="cpu")
         parser.add_argument("--ocr-mode", default="inline", choices=("subprocess", "inline"))
-        parser.add_argument("--ocr-rec-model", default="PP-OCRv6_server_rec")
         parser.add_argument("--ocr-timeout", type=float, default=30.0)
         parser.add_argument("--ocr-max-restarts", type=int, default=3)
         parser.add_argument("--ocr-use-angle-cls", action="store_true")
@@ -842,22 +841,47 @@ class RecognitionOCREngine:
             os.environ["FLAGS_use_onednn"] = "0"
             os.environ["FLAGS_tracer_onednn_ops_on"] = ""
         try:
-            from paddleocr import TextRecognition
+            from paddleocr import PaddleOCR
         except ImportError as exc:
             raise ImportError(
                 "PaddleOCR is required unless --disable-ocr is set."
             ) from exc
-        self._ocr = TextRecognition(
-            model_name=args.ocr_rec_model,
+        # Use PaddleOCR with rec=True, det=False for recognition-only mode
+        self._ocr = PaddleOCR(
+            lang=args.ocr_lang,
+            ocr_version=args.ocr_version,
+            rec=True,
+            det=False,
+            use_angle_cls=args.ocr_use_angle_cls,
             device=args.ocr_device,
         )
 
     def recognize(self, image: Image.Image, context: str = "") -> str:
         import numpy as np
 
-        results = self._ocr.predict(np.asarray(image.convert("RGB")))
-        texts = extract_ocr_texts(list(results))
-        return " ".join(text for text in texts if text).strip()
+        # PaddleOCR with det=False expects the image to contain only text
+        # It returns [[text, confidence]] format
+        image_array = np.asarray(image.convert("RGB"))
+        try:
+            results = self._ocr.ocr(image_array, det=False)
+            if results is None or not results:
+                return ""
+            # results format: [[text, confidence]]
+            if isinstance(results, list) and len(results) > 0:
+                if isinstance(results[0], list) and len(results[0]) >= 1:
+                    text = str(results[0][0]).strip()
+                    return text
+                elif isinstance(results[0], str):
+                    return results[0].strip()
+            texts = extract_ocr_texts(results)
+            return " ".join(text for text in texts if text).strip()
+        except Exception:
+            # Fallback: try with cls parameter
+            results = self._ocr.ocr(image_array, det=False, cls=True)
+            if results is None or not results:
+                return ""
+            texts = extract_ocr_texts(results)
+            return " ".join(text for text in texts if text).strip()
 
     def close(self) -> None:
         return None
