@@ -17,9 +17,11 @@ This script combines two steps:
    samples into fixed-count shuffled ordering puzzles (manifest.jsonl,
    sample.json, panels_padded/).
 
-The public command-line entry points are ``download_raw.py`` and
-``build_ordering_dataset.py``.  This module contains the shared data model and
-processing functions used by both.
+This module is the single source of truth for the COMIX pipeline.  The public
+``download_raw.py`` and ``build_ordering_dataset.py`` entry points call
+``parse_args("download")`` / ``parse_args("build")`` against the same
+``parse_args`` surface defined here, so the two-phase CLI and a single
+``parse_args("all")`` run share one implementation.
 """
 
 from __future__ import annotations
@@ -85,6 +87,20 @@ def parse_args(mode: str = "all") -> argparse.Namespace:
     include_download = mode in {"all", "download"}
     include_build = mode in {"all", "build"}
 
+    # Shared by both phases: download writes the raw dir, build reads it.
+    parser.add_argument(
+        "--raw-dir",
+        type=Path,
+        default=Path("Data/comix/raw"),
+        help="Raw sample directory: written by download, read by build.",
+    )
+    parser.add_argument(
+        "--max-pages",
+        type=int,
+        default=None,
+        help="Limit the number of pages streamed or the number of raw samples built.",
+    )
+
     if include_download:
         # Hugging Face source
         parser.add_argument(
@@ -99,15 +115,8 @@ def parse_args(mode: str = "all") -> argparse.Namespace:
         parser.add_argument("--streaming", action="store_true", default=True)
         parser.add_argument("--no-streaming", action="store_false", dest="streaming")
         parser.add_argument("--trust-remote-code", action="store_true")
-        parser.add_argument("--max-pages", type=int, default=None)
 
         # Raw download target
-        parser.add_argument(
-            "--raw-dir",
-            type=Path,
-            default=Path("Data/comix/raw"),
-            help="Where to store downloaded raw pages and annotations.",
-        )
         parser.add_argument("--download-timeout", type=float, default=30.0)
         parser.add_argument("--download-retries", type=int, default=3)
         parser.add_argument("--retry-sleep", type=float, default=2.0)
@@ -126,12 +135,6 @@ def parse_args(mode: str = "all") -> argparse.Namespace:
     if include_build:
         # Ordering build
         parser.add_argument(
-            "--raw-dir",
-            type=Path,
-            default=Path("Data/comix/raw"),
-            help="Existing raw directory to read.",
-        )
-        parser.add_argument(
             "--output-dir",
             type=Path,
             default=Path("Data/comix/4panel-ordering"),
@@ -141,7 +144,6 @@ def parse_args(mode: str = "all") -> argparse.Namespace:
         parser.add_argument("--stride", type=int, default=3)
         parser.add_argument("--shuffle-per-window", type=int, default=1)
         parser.add_argument("--puzzle-num", type=int, default=500)
-        parser.add_argument("--max-pages", type=int, default=None)
         parser.add_argument("--target-width", type=int, default=224)
         parser.add_argument("--target-height", type=int, default=224)
         parser.add_argument("--image-format", default="jpg", choices=("jpg", "png"))
@@ -168,6 +170,31 @@ def parse_args(mode: str = "all") -> argparse.Namespace:
         parser.add_argument("--ocr-use-angle-cls", action="store_true")
         parser.add_argument("--ocr-enable-pir", action="store_true")
         parser.add_argument("--ocr-enable-mkldnn", action="store_true")
+        parser.add_argument(
+            "--ocr-model-size",
+            default="default",
+            help=(
+                "PaddleOCR model tier. 'default' keeps the version default. "
+                "PP-OCRv6 supports tiny/small/medium; PP-OCRv5/v4/v3 support "
+                "mobile/server. Unknown tiers fall back to the default."
+            ),
+        )
+        parser.add_argument(
+            "--ocr-enhance-pad",
+            type=float,
+            default=0.05,
+            help="Textbox crop padding ratio (0 disables).",
+        )
+        parser.add_argument(
+            "--ocr-enhance-upscale",
+            action="store_true",
+            help="Upscale textbox crops before OCR.",
+        )
+        parser.add_argument(
+            "--ocr-enhance-rotate",
+            action="store_true",
+            help="Try rotated crops and keep best text.",
+        )
         parser.add_argument("--debug-ocr", action="store_true")
         parser.add_argument("--skip-ocr-errors", action="store_true", default=True)
         parser.add_argument(
@@ -218,7 +245,7 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--stride must be positive")
     if hasattr(args, "puzzle_num") and args.puzzle_num < 0:
         raise ValueError("--puzzle-num must be non-negative")
-    if args.max_pages is not None and args.max_pages <= 0:
+    if getattr(args, "max_pages", None) is not None and args.max_pages <= 0:
         raise ValueError("--max-pages must be positive")
     if hasattr(args, "target_width") and (args.target_width <= 0 or args.target_height <= 0):
         raise ValueError("target size must be positive")
@@ -631,10 +658,17 @@ def process_comix_sample(
                 if ocr_stats is not None:
                     ocr_stats["attempted"] += 1
                 try:
-                    crop = page_image.crop(tb_bbox).convert("RGB")
+                    pad_ratio = float(getattr(ocr, "crop_pad_ratio", 0.0) or 0.0)
+                    if pad_ratio > 0.0:
+                        from Mangazero.ocr_enhance import crop_with_padding
+                        crop = crop_with_padding(
+                            page_image, tb_bbox, padding_ratio=pad_ratio, min_padding=2
+                        )
+                    else:
+                        crop = page_image.crop(tb_bbox).convert("RGB")
                     content = recognize_dialog_text(
                         crop, ocr,
-                        skip_errors=False,
+                        skip_errors=skip_ocr_errors,
                         context=f"{panel_id} textbox",
                     )
                     if content.strip() and ocr_stats is not None:
@@ -812,7 +846,6 @@ def build_ordering_from_raw(args: argparse.Namespace) -> None:
         "ocr_backend": args.ocr_backend if not args.disable_ocr else None,
         "ocr_lang": args.ocr_lang if not args.disable_ocr else None,
         "ocr_version": args.ocr_version if not args.disable_ocr else None,
-        "ocr_rec_model": args.ocr_rec_model if not args.disable_ocr else None,
         "ocr_device": args.ocr_device if not args.disable_ocr else None,
         "ocr_stats": ocr_stats,
     }
@@ -833,6 +866,9 @@ class RecognitionOCREngine:
     """Recognize a caller-provided text crop without running text detection."""
 
     def __init__(self, args: argparse.Namespace) -> None:
+        self.crop_pad_ratio = float(getattr(args, "ocr_enhance_pad", 0.0) or 0.0)
+        self.with_upscale = bool(getattr(args, "ocr_enhance_upscale", False))
+        self.with_rotations = bool(getattr(args, "ocr_enhance_rotate", False))
         if not args.ocr_enable_pir:
             os.environ["FLAGS_enable_pir_api"] = "0"
             os.environ["FLAGS_enable_pir_in_executor"] = "0"
@@ -861,27 +897,35 @@ class RecognitionOCREngine:
 
         # PaddleOCR with det=False expects the image to contain only text
         # It returns [[text, confidence]] format
-        image_array = np.asarray(image.convert("RGB"))
-        try:
-            results = self._ocr.ocr(image_array, det=False)
-            if results is None or not results:
+        def _recognize_one(candidate: Image.Image) -> str:
+            image_array = np.asarray(candidate.convert("RGB"))
+            try:
+                results = self._ocr.ocr(image_array, det=False)
+            except Exception:
+                # Fallback: try with cls parameter
+                results = self._ocr.ocr(image_array, det=False, cls=True)
+            if not results:
                 return ""
             # results format: [[text, confidence]]
             if isinstance(results, list) and len(results) > 0:
                 if isinstance(results[0], list) and len(results[0]) >= 1:
-                    text = str(results[0][0]).strip()
-                    return text
-                elif isinstance(results[0], str):
+                    return str(results[0][0]).strip()
+                if isinstance(results[0], str):
                     return results[0].strip()
             texts = extract_ocr_texts(results)
             return " ".join(text for text in texts if text).strip()
-        except Exception:
-            # Fallback: try with cls parameter
-            results = self._ocr.ocr(image_array, det=False, cls=True)
-            if results is None or not results:
-                return ""
-            texts = extract_ocr_texts(results)
-            return " ".join(text for text in texts if text).strip()
+
+        if not (self.with_upscale or self.with_rotations):
+            return _recognize_one(image)
+
+        from Mangazero.ocr_enhance import run_ocr_variants
+
+        return run_ocr_variants(
+            image,
+            recognizers=[_recognize_one],
+            with_upscale=self.with_upscale,
+            with_rotations=self.with_rotations,
+        )
 
     def close(self) -> None:
         return None
@@ -891,3 +935,32 @@ def build_comix_ocr_engine(args: argparse.Namespace):
     if args.ocr_backend == "recognition":
         return RecognitionOCREngine(args)
     return build_ocr_engine(args)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+def main() -> None:
+    """Run the combined stream + build pipeline (equivalent to the former
+    standalone ``comix/stream_comix.py`` entry point)."""
+    args = parse_args("all")
+    validate_args(args)
+
+    if args.build_only:
+        print("=== Build only (skip download) ===", flush=True)
+        build_ordering_from_raw(args)
+        return
+
+    if not args.stream_only:
+        print("=== Step 1/2: Stream raw samples from Hugging Face ===", flush=True)
+    stream_raw_samples(args)
+
+    if not args.stream_only:
+        print("\n=== Step 2/2: Build ordering dataset ===", flush=True)
+        build_ordering_from_raw(args)
+
+
+if __name__ == "__main__":
+    main()

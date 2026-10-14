@@ -15,9 +15,14 @@ Text-jigsaw/
 │   ├── build_dataset.py           # 从本地原始数据构建 panel 排序 puzzle
 │   ├── main.py                    # 一步式下载 + 构建 pipeline（含 OCR）
 │   └── format_report.json         # 数据构建统计/格式报告
+├── comix/                         # COMIX（Hugging Face）数据下载 + ordering 构建
+│   ├── comix_pipeline.py          # 共享实现（stream raw + build ordering）
+│   ├── download_raw.py            # 仅下载 raw 页样本
+│   ├── build_ordering_dataset.py  # 仅从本地 raw 目录构建 ordering 数据集
+│   ├── stream_comix.py            # stream + build 一体化入口（转发到 comix_pipeline）
+│   └── create_panel_ordering_dataset.py # COMICS 老数据集链路：raw panels + OCR CSV
 ├── comics/                        # COMICS 数据集（上游仓库 + 数据创建脚本）
 │   ├── create_panel_ordering_dataset.py # 从 raw panels + OCR CSV 构建 panel 排序 puzzle
-│   ├── stream_comix.py            # 从 Hugging Face 流式下载 comix 并构建 ordering 数据集
 │   └── ...                        # 上游 COMICS 代码与 folds
 ├── newspaper_navigator/           # 历史报纸版面拼图数据集
 │   ├── create_ocr_dataset.py      # 获取报纸页面图像并配对 ALTO OCR XML
@@ -80,22 +85,22 @@ COMIX（Hugging Face）流式构建示例：
 
 ```bash
 # 完整流程：流式下载 + 构建 ordering 数据集
-python comics/stream_comix.py \
+python comix/stream_comix.py \
   --dataset-name emanuelevivoli/comix-v0_1-pages \
   --split train \
   --max-pages 100 \
-  --raw-dir comics/raw_comix \
-  --output-dir comics/ordering_dataset \
+  --raw-dir Data/comix/raw \
+  --output-dir Data/comix/6panel-ordering \
   --panel-count 6 --puzzle-num 500 \
   --disable-ocr
 
 # 仅流式下载 raw 数据
-python comics/stream_comix.py --dataset-name emanuelevivoli/comix-v0_1-pages --stream-only --max-pages 100
+python comix/download_raw.py --dataset-name emanuelevivoli/comix-v0_1-pages --max-pages 100
 
 # 仅从已有 raw 目录构建 ordering 数据集
-python comics/stream_comix.py --build-only --raw-dir comics/raw_comix --disable-ocr
+python comix/build_ordering_dataset.py --raw-dir Data/comix/raw --output-dir Data/comix/6panel-ordering --disable-ocr
 ```
 
-`stream_comix.py` 复用 `Mangazero/build_dataset.py` 的 `write_puzzle_directory`、`pad_image`、`clamp_bbox` 等逻辑，输出与 Mangazero 相同格式的 `manifest.jsonl` + `sample.json` + `panels_padded/`，可以直接喂给现有的 `Solver/train_mangazero_panel_ordering.py` 和 `Solver/train_mangazero_permutation_classifier.py`。
+COMIX 链路实现集中在 `comix/comix_pipeline.py`；`stream_comix.py` 是一体化入口，直接转发到 `comix_pipeline.main()`，不再重复实现下载/构建逻辑。它复用 `Mangazero/build_dataset.py` 的 `write_puzzle_directory`、`pad_image`、`clamp_bbox` 等逻辑，输出与 Mangazero 相同格式的 `manifest.jsonl` + `sample.json` + `panels_padded/`，可以直接喂给现有的 `Solver/train_mangazero_panel_ordering.py` 和 `Solver/train_mangazero_permutation_classifier.py`。
 
 官方 pages 数据集字段为 `page["json"]`（元数据，含 `book_id/page_number/page_class/detections`）和 `page["jpg"]`（PIL 页面图）。脚本会保存 `metadata` 与页面图，并从 `metadata["detections"]["fasterrcnn"]["panels"]` 读取 panel 框、从 `textboxes`/`characters` 按重叠归属到 panel，产出可与 Mangazero 训练入口直接对接的 ordering 数据集。

@@ -2,7 +2,7 @@
 
 本文档说明 panel-ordering（漫画分镜排序）数据格式中各个字段的含义、取值范围和消费位置。
 
-ordering 数据由四条生产链路产出：`Mangazero/build_dataset.py`、`Manga109/create_ordering.py`、`comics/create_panel_ordering_dataset.py`、`comix/stream_comix.py`（`comix_pipeline.py`）。它们统一写出 `manifest.jsonl` + `<puzzle_index>/sample.json` + `<puzzle_index>/panels_padded/*.jpg`，并由
+ordering 数据由四条生产链路产出：`Mangazero/build_dataset.py`、`Manga109/create_ordering.py`、`comix/create_panel_ordering_dataset.py`、`comix/comix_pipeline.py`。它们统一写出 `manifest.jsonl` + `<puzzle_index>/sample.json` + `<puzzle_index>/panels_padded/*.jpg`，并由
 [Solver/env/mangazero_panel_env.py](../Solver/env/mangazero_panel_env.py) 消费。
 
 ## 1. 数据集目录布局
@@ -167,5 +167,6 @@ info 字段：
 
 - `Mangazero/build_dataset.py`：panel 来自数据集自带 `frames`，`global_order = page_index*10000 + panel_index`，OCR 可关（`--disable-ocr` 时 `dialog_text` 为空）。
 - `Manga109/create_ordering.py`：panel 来自 XML `<frame>`，按 `sort_bboxes_reading_order` 计算阅读顺序，用滑动窗口 `stride` 切窗。
-- `comics/` 与 `comix/`：沿用 OCR CSV 或 Hugging Face 页样本，复用 `reading_order_utils` 与 Mangazero 写出逻辑，字段保持一致。
+- `comix/create_panel_ordering_dataset.py`（COMICS 老数据集）：沿用 OCR CSV，按官方 `panel_no` 排序。
+- `comix/comix_pipeline.py`（COMIX Hugging Face）：实现集中在该模块，`stream_comix.py` / `download_raw.py` / `build_ordering_dataset.py` 只是入口转发。默认按 `sort_prepared_panels_reading_order` 几何重排（`--no-sort-panels-reading-order` 可退回检测顺序，`--reading-order-ltr` 可切西式顺序）。
 - 以上链路都保证输出可直接喂给 `MangaZeroPanelOrderingDataset`，无需改字段。
