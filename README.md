@@ -21,7 +21,7 @@ Text-jigsaw/
 │   ├── build_ordering_dataset.py  # 仅从本地 raw 目录构建 ordering 数据集
 │   ├── stream_comix.py            # stream + build 一体化入口（转发到 comix_pipeline）
 │   └── create_panel_ordering_dataset.py # COMICS 老数据集链路：raw panels + OCR CSV
-├── comics/                        # COMICS 数据集（上游仓库 + 数据创建脚本）
+├── third_party/comics/            # COMICS 上游仓库（数据创建脚本）
 │   ├── create_panel_ordering_dataset.py # 从 raw panels + OCR CSV 构建 panel 排序 puzzle
 │   └── ...                        # 上游 COMICS 代码与 folds
 ├── newspaper_navigator/           # 历史报纸版面拼图数据集
@@ -57,7 +57,7 @@ Text-jigsaw/
 
 1. `Data/DataGenerator.py`：从文本文件和字体生成合成 3x3 拼图。每个样本输出一张页面图、9 张 piece 图和一个 JSON 标签（包含 piece 文本、segments、行列位置等），并支持侵蚀/泛黄等版面扰动。
 2. `Mangazero/`：从 Hugging Face `jianzongwu/MangaZero` 抓取漫画页，裁剪 panel、对对话框文本做 OCR，生成固定 panel 数量（默认 6）的乱序排序样本，输出 `train/val/test.jsonl` 或 manifest 格式。
-3. `comics/`：使用 COMICS 官方 raw panel 图片和 `COMICS_ocr_file.csv`（含 textbox 坐标与 OCR 文本），按漫画书/页/panel 顺序生成固定 panel 数量的排序 puzzle，输出与 Mangazero 相同格式。原始数据不在仓库内，需按 `comics/setup.sh` 或官方链接下载。
+3. `third_party/comics/`：使用 COMICS 官方 raw panel 图片和 `COMICS_ocr_file.csv`（含 textbox 坐标与 OCR 文本），按漫画书/页/panel 顺序生成固定 panel 数量的排序 puzzle，输出与 Mangazero 相同格式。原始数据不在仓库内，需按 `third_party/comics/setup.sh` 或官方链接下载。
 4. `newspaper_navigator/`：从 Chronicling America / Newspaper Navigator 获取历史报纸页面，结合 ALTO OCR 的字符框，把页面切成网格 piece，产出带字符级标签的拼图数据，用于 3x3 RL 训练。
 
 ## Solver
@@ -73,11 +73,11 @@ Text-jigsaw/
 COMICS 构建示例：
 
 ```bash
-python comics/create_panel_ordering_dataset.py \
-  --panels-dir comics/data/raw_panel_images \
-  --ocr-csv comics/data/COMICS_ocr_file.csv \
-  --ad-pages comics/data/predadpages.txt \
-  --output-dir comics/panel_ordering_dataset \
+python comix/create_panel_ordering_dataset.py \
+  --panels-dir third_party/comics/data/raw_panel_images \
+  --ocr-csv third_party/comics/data/COMICS_ocr_file.csv \
+  --ad-pages third_party/comics/data/predadpages.txt \
+  --output-dir third_party/comics/panel_ordering_dataset \
   --panel-count 6 --puzzle-num 500
 ```
 
@@ -104,3 +104,39 @@ python comix/build_ordering_dataset.py --raw-dir Data/comix/raw --output-dir Dat
 COMIX 链路实现集中在 `comix/comix_pipeline.py`；`stream_comix.py` 是一体化入口，直接转发到 `comix_pipeline.main()`，不再重复实现下载/构建逻辑。它复用 `Mangazero/build_dataset.py` 的 `write_puzzle_directory`、`pad_image`、`clamp_bbox` 等逻辑，输出与 Mangazero 相同格式的 `manifest.jsonl` + `sample.json` + `panels_padded/`，可以直接喂给现有的 `Solver/train_mangazero_panel_ordering.py` 和 `Solver/train_mangazero_permutation_classifier.py`。
 
 官方 pages 数据集字段为 `page["json"]`（元数据，含 `book_id/page_number/page_class/detections`）和 `page["jpg"]`（PIL 页面图）。脚本会保存 `metadata` 与页面图，并从 `metadata["detections"]["fasterrcnn"]["panels"]` 读取 panel 框、从 `textboxes`/`characters` 按重叠归属到 panel，产出可与 Mangazero 训练入口直接对接的 ordering 数据集。
+
+
+## Made2Order Solver
+
+An independent panel-ordering solver backed by
+[`third_party/made2order`](third_party/made2order) (ECCV 2024, Apache-2.0).
+The upstream repository is kept untouched and imported at runtime; the project
+adapter lives in `Solver/agent/made2order_set2order_solver.py`.
+
+Dependencies for this solver: `torch`, `einops`. No upstream dataset deps
+(`cv2`, `natsort`, `nibabel`, ...) are required.
+
+Train on the existing MangaZero panel-ordering dataset:
+
+```bash
+python Solver/train_made2order_panel_ordering.py \
+  --dataset-dir Mangazero/ordering_dataset \
+  --panel-count 6 --epoch 10 --batch-size 8 \
+  --image-width 224 --image-height 224 --patch-size 16
+```
+
+Quick smoke run on a dataset slice:
+
+```bash
+python Solver/smoke_made2order.py --max-samples 16 --steps 2 --device cpu
+```
+
+Evaluate a checkpoint:
+
+```bash
+python Solver/test_made2order_panel_ordering.py \
+  --dataset-dir Mangazero/ordering_dataset \
+  --panel-count 6 \
+  --checkpoint Solver/checkpoints_made2order/last.pt \
+  --split test
+```

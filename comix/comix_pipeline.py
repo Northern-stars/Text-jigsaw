@@ -143,7 +143,30 @@ def parse_args(mode: str = "all") -> argparse.Namespace:
         parser.add_argument("--panel-count", type=int, default=6)
         parser.add_argument("--stride", type=int, default=3)
         parser.add_argument("--shuffle-per-window", type=int, default=1)
-        parser.add_argument("--puzzle-num", type=int, default=500)
+        parser.add_argument(
+            "--puzzle-num",
+            type=int,
+            default=500,
+            help="Fallback train puzzle count when --train-puzzles is 0.",
+        )
+        parser.add_argument(
+            "--train-puzzles",
+            type=int,
+            default=0,
+            help="Exact number of train puzzles to generate (0 uses --puzzle-num).",
+        )
+        parser.add_argument(
+            "--val-puzzles",
+            type=int,
+            default=0,
+            help="Exact number of val puzzles to generate.",
+        )
+        parser.add_argument(
+            "--test-puzzles",
+            type=int,
+            default=0,
+            help="Exact number of test puzzles to generate.",
+        )
         parser.add_argument("--target-width", type=int, default=224)
         parser.add_argument("--target-height", type=int, default=224)
         parser.add_argument("--image-format", default="jpg", choices=("jpg", "png"))
@@ -738,6 +761,11 @@ def build_ordering_from_raw(args: argparse.Namespace) -> None:
     target_size = (args.target_width, args.target_height)
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    from dataset_split_utils import SplitBudget, SplitManifests, resolve_split_counts
+
+    train_q, val_q, test_q = resolve_split_counts(args, default_puzzle_num=args.puzzle_num)
+    budget = SplitBudget(train=train_q, val=val_q, test=test_q)
+    split_manifests = SplitManifests(output_dir)
     ocr = None if args.disable_ocr else build_comix_ocr_engine(args)
     ocr_stats = {"attempted": 0, "recognized": 0, "empty": 0, "failed": 0}
 
@@ -789,20 +817,32 @@ def build_ordering_from_raw(args: argparse.Namespace) -> None:
 
     # Write a manifest + numbered puzzle directories, compatible with
     # MangaZeroPanelOrderingDataset and the MangaZero training scripts.
-    manifest_path = output_dir / "manifest.jsonl"
+    #
+    # Split isolation: every page is assigned to the currently active split and
+    # keeps producing puzzles for that split only. Once the split quota is
+    # filled we abandon the rest of that page and move on, so train/val/test
+    # never share a page or any window built from it.
     puzzle_count = 0
-    with manifest_path.open("w", encoding="utf-8") as manifest_handle:
+    try:
         for group_key, page_panels in sorted(grouped_panels.items()):
+            if budget.done:
+                break
+            split_name = budget.active_split
+            if split_name is None:
+                break
+
             page_panels.sort(key=lambda p: p.record.panel_index_in_page)
             group_name, page_key = _split_group_key(group_key)
             for start in range(0, len(page_panels), args.stride):
-                if puzzle_count >= args.puzzle_num:
+                if budget.done or puzzle_count >= args.puzzle_num:
                     break
                 if start + args.panel_count > len(page_panels):
                     continue
                 window = page_panels[start:start + args.panel_count]
                 for _ in range(args.shuffle_per_window):
-                    if puzzle_count >= args.puzzle_num:
+                    if budget.done or puzzle_count >= args.puzzle_num:
+                        break
+                    if budget.remaining <= 0:
                         break
                     sample_json = write_puzzle_directory(
                         puzzle_index=puzzle_count,
@@ -814,21 +854,23 @@ def build_ordering_from_raw(args: argparse.Namespace) -> None:
                         image_format=args.image_format,
                         rng=rng,
                     )
-                    manifest_handle.write(
-                        json.dumps(
-                            {
-                                "puzzle_index": puzzle_count,
-                                "sequence_id": sample_json["sequence_id"],
-                                "sample_path": f"{puzzle_count:06d}/sample.json",
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
-                    manifest_handle.flush()
+                    entry = {
+                        "puzzle_index": puzzle_count,
+                        "sequence_id": sample_json["sequence_id"],
+                        "sample_path": f"{puzzle_count:06d}/sample.json",
+                        "page_key": page_key,
+                        "page_id": page_panels[0].record.page_id,
+                    }
+                    split_manifests.write(split_name, entry)
+                    split_manifests.flush()
+                    budget.add(1)
                     puzzle_count += 1
-            if puzzle_count >= args.puzzle_num:
+                    if budget.active_split != split_name:
+                        break
+            if budget.done or puzzle_count >= args.puzzle_num:
                 break
+    finally:
+        split_manifests.close()
 
     meta = {
         "source": "comix via HuggingFace",
@@ -842,6 +884,17 @@ def build_ordering_from_raw(args: argparse.Namespace) -> None:
         "target_panel_size": [args.target_width, args.target_height],
         "group_count": len(grouped_panels),
         "puzzle_count": puzzle_count,
+        "split_counts": budget.totals,
+        "split_target_counts": {
+            "train": train_q,
+            "val": val_q,
+            "test": test_q,
+        },
+        "split_note": (
+            "Pages are assigned to one split at a time in train/val/test order; "
+            "a page stops producing once its split quota is filled, so splits "
+            "share no page or window."
+        ),
         "ocr_enabled": not args.disable_ocr,
         "ocr_backend": args.ocr_backend if not args.disable_ocr else None,
         "ocr_lang": args.ocr_lang if not args.disable_ocr else None,

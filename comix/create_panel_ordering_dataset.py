@@ -1,10 +1,10 @@
 """Build fixed-count panel-ordering puzzles from the COMICS dataset.
 
-The script expects the COMICS data that ``comics/setup.sh`` downloads:
+The script expects the COMICS data that ``third_party/comics/setup.sh`` downloads:
 
-    comics/data/raw_panel_images/<comic_no>/<page_no>_<panel_no>.jpg
-    comics/data/COMICS_ocr_file.csv
-    comics/data/predadpages.txt
+    third_party/comics/data/raw_panel_images/<comic_no>/<page_no>_<panel_no>.jpg
+    third_party/comics/data/COMICS_ocr_file.csv
+    third_party/comics/data/predadpages.txt
 
 The OCR CSV uses the official COMICS columns:
 ``comic_no,page_no,panel_no,textbox_no,dialog_or_narration,text,x1,y1,x2,y2``.
@@ -12,7 +12,7 @@ The OCR CSV uses the official COMICS columns:
 Output is written in the same layout as ``Mangazero/build_dataset.py`` so the
 existing MangaZero training scripts can consume it directly:
 
-    comics/panel_ordering_dataset/
+    third_party/comics/panel_ordering_dataset/
       manifest.jsonl
       meta.json
       000000/sample.json
@@ -70,10 +70,10 @@ class Panel:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Create COMICS panel-ordering puzzles.")
-    parser.add_argument("--panels-dir", type=Path, default=Path("comics/data/raw_panel_images"))
-    parser.add_argument("--ocr-csv", type=Path, default=Path("comics/data/COMICS_ocr_file.csv"))
-    parser.add_argument("--ad-pages", type=Path, default=Path("comics/data/predadpages.txt"))
-    parser.add_argument("--output-dir", type=Path, default=Path("comics/panel_ordering_dataset"))
+    parser.add_argument("--panels-dir", type=Path, default=Path("third_party/comics/data/raw_panel_images"))
+    parser.add_argument("--ocr-csv", type=Path, default=Path("third_party/comics/data/COMICS_ocr_file.csv"))
+    parser.add_argument("--ad-pages", type=Path, default=Path("third_party/comics/data/predadpages.txt"))
+    parser.add_argument("--output-dir", type=Path, default=Path("third_party/comics/panel_ordering_dataset"))
     parser.add_argument("--panel-count", type=int, default=6)
     parser.add_argument("--stride", type=int, default=3)
     parser.add_argument("--shuffle-per-window", type=int, default=1)

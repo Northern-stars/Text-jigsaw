@@ -255,12 +255,17 @@ def main() -> None:
                         puzzle_count += 1
                         if budget.active_split != split_name:
                             break
+                    # A page belongs to exactly one split. Once that split is
+                    # full, stop using the page for later windows too.
+                    if budget.active_split != split_name:
+                        break
             set_progress_status(progress_bar, "等待下一页")
             if puzzle_count >= args.puzzle_num:
                 break
             if puzzle_count >= args.puzzle_num:
                 break
         manifest_handle.close()
+        split_manifests.close()
 
         meta = {
             "dataset_name": args.dataset_name,
