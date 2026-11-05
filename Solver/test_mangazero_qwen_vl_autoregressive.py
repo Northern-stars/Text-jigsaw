@@ -13,8 +13,11 @@ from torch.utils.data import DataLoader
 
 sys.path.append(".")
 
-from Solver.env.mangazero_panel_env import MangaZeroPanelOrderingDataset, collate_panel_ordering_batch
-from Solver.train_mangazero_panel_ordering import format_split_metrics, parse_split_ratio, split_dataset
+from Solver.data.panel_ordering_dataset import (
+    collate_panel_ordering_batch,
+    load_panel_ordering_splits,
+)
+from Solver.train_mangazero_panel_ordering import format_split_metrics
 from Solver.train_mangazero_qwen_vl_autoregressive import build_model, evaluate, load_checkpoint
 
 
@@ -24,8 +27,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--panel-count", type=int, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--split", required=True, choices=("train", "valid", "val", "test"))
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--split-ratio", default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -45,19 +46,16 @@ def main() -> None:
     model_args.panel_count = args.panel_count
     model_args.load = None
 
-    split_ratio = parse_split_ratio(str(args.split_ratio or config.get("split_ratio", "0.8,0.1,0.1")))
     image_width = int(config.get("image_width", 224))
     image_height = int(config.get("image_height", 224))
     batch_size = int(args.batch_size or config.get("batch_size", 1))
     num_workers = int(args.num_workers if args.num_workers is not None else config.get("num_workers", 0))
 
-    full_dataset = MangaZeroPanelOrderingDataset(
+    train_dataset, val_dataset, test_dataset = load_panel_ordering_splits(
         dataset_dir=args.dataset_dir,
-        split="all",
         image_size=(image_width, image_height),
         use_layout=False,
     )
-    train_dataset, val_dataset, test_dataset = split_dataset(full_dataset, split_ratio, args.seed)
     split_name = "val" if args.split == "valid" else args.split
     target_dataset = {
         "train": train_dataset,
@@ -92,7 +90,6 @@ def main() -> None:
                     "checkpoint": str(args.checkpoint),
                     "dataset_dir": str(args.dataset_dir),
                     "split": split_name,
-                    "seed": args.seed,
                     "metrics": metrics,
                 },
                 handle,

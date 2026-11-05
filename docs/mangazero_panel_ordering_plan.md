@@ -13,7 +13,7 @@ python Data/Mangazero/download_raw.py --raw-dir Data/Mangazero/raw --split train
 再从本地 raw 数据构建 puzzle：
 
 ```bash
-python Data/Mangazero/build_dataset.py --raw-dir Data/Mangazero/raw --output-dir Data/Mangazero/ordering_dataset --panel-count 6 --stride 3 --shuffle-per-window 1 --target-width 224 --target-height 224
+python Data/Mangazero/build_dataset.py --raw-dir Data/Mangazero/raw --output-dir Data/Mangazero/ordering_dataset --panel-count 6 --stride 3 --shuffle-per-window 1 --target-width 224 --target-height 224 --train-puzzles 400 --val-puzzles 50 --test-puzzles 50
 ```
 
 快速无 OCR 检查：
@@ -138,17 +138,17 @@ python Solver/train_mangazero_panel_ordering.py --dataset-dir Data/Mangazero/ord
 单独测试 checkpoint：
 
 ```bash
-python Solver/test_mangazero_panel_ordering.py --dataset-dir Data/Mangazero/ordering_dataset --panel-count 6 --checkpoint Solver/checkpoints_mangazero/best.pt --split test --seed 0
+python Solver/test_mangazero_panel_ordering.py --dataset-dir Data/Mangazero/ordering_dataset --panel-count 6 --checkpoint Solver/checkpoints_mangazero/best.pt --split test
 ```
 
 测试训练集或验证集：
 
 ```bash
-python Solver/test_mangazero_panel_ordering.py --dataset-dir Data/Mangazero/ordering_dataset --panel-count 6 --checkpoint Solver/checkpoints_mangazero/best.pt --split train --seed 0
-python Solver/test_mangazero_panel_ordering.py --dataset-dir Data/Mangazero/ordering_dataset --panel-count 6 --checkpoint Solver/checkpoints_mangazero/best.pt --split valid --seed 0
+python Solver/test_mangazero_panel_ordering.py --dataset-dir Data/Mangazero/ordering_dataset --panel-count 6 --checkpoint Solver/checkpoints_mangazero/best.pt --split train
+python Solver/test_mangazero_panel_ordering.py --dataset-dir Data/Mangazero/ordering_dataset --panel-count 6 --checkpoint Solver/checkpoints_mangazero/best.pt --split valid
 ```
 
-注意：`--seed` 和 `--split-ratio` 必须与训练时一致，否则 train/valid/test 的样本划分会变化。
+训练和测试直接读取 ordering 数据集中的 `train.jsonl`、`val.jsonl`、`test.jsonl` 或合并 manifest 的 `split` 字段，因此同一数据目录始终使用同一划分。旧版没有 split 元数据的数据目录不能直接用于训练；请重新构建带有 train/val/test 清单的数据集。
 
 checkpoint 默认保存到：
 
@@ -158,11 +158,10 @@ Solver/checkpoints_mangazero/
 
 训练参数：
 
-- `--dataset-dir`：读取的数据集目录，需包含 `manifest.jsonl` 或数字编号 puzzle 目录。
+- `--dataset-dir`：读取的数据集目录，需包含带 split 的 `manifest.jsonl` 和/或 `train.jsonl`、`val.jsonl`、`test.jsonl`。
 - `--solver-type`：solver 类型，可选 `visual`、`text`、`multimodal`。
 - `--epoch`：总训练 epoch 数。
 - `--epochs`：`--epoch` 的兼容别名；如果同时设置，以 `--epochs` 为准。
-- `--split-ratio`：训练时将完整 puzzle 数据随机划分为 train/val/test 的比例，格式如 `0.8,0.1,0.1`。
 - `--test-per-epoch`：每训练多少个 epoch 后跑一次 test，默认 `5`。
 - `--batch-size`：训练 batch size。
 - `--lr`：AdamW 学习率。
@@ -199,8 +198,6 @@ Solver/checkpoints_mangazero/
 - `--panel-count`：每个样本的 panel 数，必须和训练 checkpoint 一致。
 - `--checkpoint`：要测试的 checkpoint 路径，如 `best.pt` 或 `last.pt`。
 - `--split`：要测试的 split，可选 `train`、`valid`、`val`、`test`。
-- `--seed`：split 随机种子，必须和训练时一致。
-- `--split-ratio`：split 比例；不传时优先使用 checkpoint 中保存的训练配置，否则默认 `0.8,0.1,0.1`。
 - `--batch-size`：测试 batch size；不传时优先使用 checkpoint 配置。
 - `--num-workers`：DataLoader worker 数；不传时优先使用 checkpoint 配置。
 - `--device`：测试设备，默认自动选择 `cuda` 或 `cpu`。
@@ -211,6 +208,7 @@ Solver/checkpoints_mangazero/
 ```text
 Data/Mangazero/download_raw.py
 Data/Mangazero/build_dataset.py
+Solver/data/panel_ordering_dataset.py
 Solver/env/mangazero_panel_env.py
 Solver/agent/mangazero_set2seq_solver.py
 Solver/train_mangazero_panel_ordering.py
@@ -231,8 +229,8 @@ Hugging Face MangaZero
 -> 按 page 维护连续 panel 窗口
 -> 每凑够一个固定数量同页连续 panel 窗口就打乱输入顺序
 -> 写出 output_dir/{index}/sample.json 和对应图片
--> Dataset/Env 读取完整 puzzle 数据
--> train 脚本按 split-ratio 划分 train/val/test
+-> 统一 Dataset 按 manifest split 读取 train/val/test
+-> train 和 test 脚本使用同一份划分
 -> Set-to-sequence Transformer solver 训练、验证、测试
 ```
 
@@ -618,7 +616,7 @@ Solver/train_mangazero_panel_ordering.py
 - pointer cross entropy。
 - 训练时先按 `target_order` 复原每个 puzzle 的正确 panel 顺序，再在程序内随机打乱一次后送入 solver。
 - validation 使用 greedy decode。
-- 训练开始时对完整 puzzle 数据按 `--split-ratio` 切分为 train/val/test。
+- 训练开始时分别读取 manifest 指定的 train、val、test 样本；不会在 puzzle 级重新随机拆分。
 - 每个 epoch 结束后自动跑 validation。
 - 每 `--test-per-epoch` 个 epoch 自动跑一次 test，训练结束后额外保存一次最终 test。
 

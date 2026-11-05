@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import random
 import sys
 from pathlib import Path
 from statistics import mean
@@ -22,7 +21,11 @@ from torch.utils.data import DataLoader, Subset
 sys.path.append(".")
 
 from Solver.agent.made2order_set2order_solver import Made2OrderPanelOrderingSolver
-from Solver.env.mangazero_panel_env import MangaZeroPanelOrderingDataset, collate_panel_ordering_batch
+from Solver.data.panel_ordering_dataset import (
+    MangaZeroPanelOrderingDataset,
+    collate_panel_ordering_batch,
+    load_panel_ordering_splits,
+)
 
 try:
     from tqdm import tqdm
@@ -36,7 +39,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-samples", type=int, default=None, help="Limit the dataset slice for quick smoke runs.")
     parser.add_argument("--epoch", type=int, default=10)
     parser.add_argument("--epochs", type=int, default=None, help="Alias of --epoch.")
-    parser.add_argument("--split-ratio", default="0.8,0.1,0.1")
     parser.add_argument("--test-per-epoch", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -56,36 +58,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args()
-
-
-def parse_split_ratio(raw_ratio: str) -> tuple[float, float, float]:
-    values = tuple(float(item) for item in raw_ratio.split(","))
-    if len(values) != 3:
-        raise ValueError("--split-ratio must contain three comma-separated values")
-    total = sum(values)
-    if total <= 0:
-        raise ValueError("--split-ratio sum must be positive")
-    return tuple(value / total for value in values)
-
-
-def split_dataset(
-    dataset: MangaZeroPanelOrderingDataset,
-    ratio: tuple[float, float, float],
-    seed: int,
-) -> tuple[Subset, Subset, Subset]:
-    indices = list(range(len(dataset)))
-    rng = random.Random(seed)
-    rng.shuffle(indices)
-    train_end = round(len(indices) * ratio[0])
-    val_end = train_end + round(len(indices) * ratio[1])
-    train_indices = indices[:train_end]
-    val_indices = indices[train_end:val_end]
-    test_indices = indices[val_end:]
-    return (
-        Subset(dataset, train_indices),
-        Subset(dataset, val_indices),
-        Subset(dataset, test_indices),
-    )
 
 
 def move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
@@ -283,18 +255,16 @@ def main() -> None:
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
 
-    full_dataset = MangaZeroPanelOrderingDataset(
+    train_dataset, val_dataset, test_dataset = load_panel_ordering_splits(
         dataset_dir=args.dataset_dir,
-        split="all",
         image_size=(args.image_width, args.image_height),
         use_layout=False,
     )
     if args.max_samples is not None and args.max_samples > 0:
-        full_dataset = torch.utils.data.Subset(
-            full_dataset,
-            list(range(min(args.max_samples, len(full_dataset)))),
+        train_dataset = Subset(
+            train_dataset,
+            list(range(min(args.max_samples, len(train_dataset)))),
         )
-    train_dataset, val_dataset, test_dataset = split_dataset(full_dataset, parse_split_ratio(args.split_ratio), args.seed)
     print(
         "dataset_split "
         f"train={len(train_dataset)} val={len(val_dataset)} test={len(test_dataset)}"

@@ -3,7 +3,7 @@
 本文档说明 panel-ordering（漫画分镜排序）数据格式中各个字段的含义、取值范围和消费位置。
 
 ordering 数据由四条生产链路产出：`Mangazero/build_dataset.py`、`Manga109/create_ordering.py`、`comix/create_panel_ordering_dataset.py`、`comix/comix_pipeline.py`。它们统一写出 `manifest.jsonl` + `<puzzle_index>/sample.json` + `<puzzle_index>/panels_padded/*.jpg`，并由
-[Solver/env/mangazero_panel_env.py](../Solver/env/mangazero_panel_env.py) 消费。
+[Solver/data/panel_ordering_dataset.py](../Solver/data/panel_ordering_dataset.py) 消费；旧的环境模块保留兼容导入。
 
 ## 1. 数据集目录布局
 

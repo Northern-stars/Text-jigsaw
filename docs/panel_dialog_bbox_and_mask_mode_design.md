@@ -175,7 +175,7 @@ def build_ordering_messages_masked(
 | `guess_inference` | 无 | 无 | 标准 + 提示无图 | 去掉图 + 提示 |
 | `mask_inference` | 有（气泡区域被遮） | 被遮 | 标准 | 只在图上遮罩 |
 
-`mask_inference` 与 `solve` 应保持**除视觉输入外的一切因素相同**（同一个 prompt 文本、同样的 `answer_generator`、同样的解析与校验），这样得到的是纯粹的「画内文字消融」对照，符合研究提案四条件里的 Visual-only 条件（见 [mirage_modality_ablation_proposal.md](mirage_modality_ablation_proposal.md)）。
+`mask_inference` 与 `solve` 应保持**除视觉输入外的一切因素相同**（同一个 prompt 文本、同样的 `answer_generator`、同样的解析与校验），这样得到的是纯粹的「画内文字消融」对照，对应新研究提案辅助实验中的 Visual-only（见 [lvlm_panel_reordering_intervention_proposal.md](lvlm_panel_reordering_intervention_proposal.md)）。
 
 ### 3.3 遮罩生成
 
@@ -223,7 +223,7 @@ masks: list[list[list[int]]] = field(default_factory=list)
 
 ### 4.1 定位
 
-对应研究提案四条件中的 **OCR-only**：不给任何 panel 图像，只把画内文字的转录作为文本输入，让模型据此排序（见 [mirage_modality_ablation_proposal.md](mirage_modality_ablation_proposal.md)）。它是 `Text-only retention ratio` 与 `Visual gain` 两个指标的输入条件。
+对应新研究提案辅助实验中的 **OCR-only**：不给任何 panel 图像，只把画内文字的转录作为文本输入，让模型据此排序（见 [lvlm_panel_reordering_intervention_proposal.md](lvlm_panel_reordering_intervention_proposal.md)）。它是 `Text-only retention ratio` 与 `Visual gain` 两个指标的输入条件。
 
 与现有无图路径的关系：
 
@@ -350,7 +350,7 @@ Solver 侧：
 
 ## 7. 与论文实验的映射
 
-本方案直接支撑研究提案里的四条件（Full / Visual-only / OCR-only / No-image）与辅助条件 Full+OCR：
+本方案支撑新研究提案中的辅助文本线索实验（Visual-only / OCR-only / No-image）以及辅助条件 Full+OCR：
 
 - `solve` ≈ Full
 - `mask_inference` ≈ Visual-only（保留图像，遮掉画内文字）
@@ -358,7 +358,7 @@ Solver 侧：
 - `mirage_inference` / `guess_inference` ≈ No-image（静默 / 显式两种 framing）
 - `solve(panels, texts=...)` ≈ Full + OCR（图像 + 额外转录）
 
-详见 [mirage_modality_ablation_proposal.md](mirage_modality_ablation_proposal.md)。
+详见 [lvlm_panel_reordering_intervention_proposal.md](lvlm_panel_reordering_intervention_proposal.md)。
 
 ## 8. 改动清单（实现时按此落地）
 

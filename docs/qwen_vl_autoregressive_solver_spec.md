@@ -430,7 +430,6 @@ python Solver/test_mangazero_qwen_vl_autoregressive.py \
 | `--panel-count` | （必填） | 每个 puzzle 的 panel 数，必须与数据集一致 |
 | `--model-name` | `Qwen/Qwen2.5-VL-3B-Instruct` | Hugging Face 模型名 |
 | `--epoch` / `--epochs` | `3` | 训练 epoch 数；同时设置时以 `--epochs` 为准 |
-| `--split-ratio` | `0.8,0.1,0.1` | train/val/test 切分比例 |
 | `--test-per-epoch` | `1` | 每多少 epoch 跑一次 test |
 | `--batch-size` | `1` | 微 batch 大小；VLM 显存大，默认 1 |
 | `--grad-accum-steps` | `8` | 梯度累积步数，等效 batch = batch-size × 梯度累积 |
@@ -459,7 +458,7 @@ python Solver/test_mangazero_qwen_vl_autoregressive.py \
 | `--save-every` | `1` | 每多少 epoch 保存 `epoch_XXXX.pt` |
 | `--save-full-state` | 关闭 | 打开后保存完整模型状态，否则只保存 LoRA + decoder |
 | `--device` | 自动 `cuda` / `cpu` | 训练设备 |
-| `--seed` | `0` | 随机种子，影响 split 与在线重排 |
+| `--seed` | `0` | 随机种子，影响训练时在线重排；数据 split 由 manifest 决定 |
 
 ### 11.4 测试脚本参数
 
@@ -469,14 +468,12 @@ python Solver/test_mangazero_qwen_vl_autoregressive.py \
 | `--panel-count` | （必填） | 每个 puzzle 的 panel 数，必须与 checkpoint 一致 |
 | `--checkpoint` | （必填） | 要评估的 checkpoint 路径，如 `best.pt` / `last.pt` |
 | `--split` | （必填） | `train` / `valid` / `val` / `test` |
-| `--seed` | `0` | split 随机种子，必须与训练时一致 |
-| `--split-ratio` | checkpoint 配置优先，否则 `0.8,0.1,0.1` | split 比例；不传时优先用 checkpoint 保存的配置 |
 | `--batch-size` | checkpoint 配置优先，否则 `1` | 测试 batch 大小 |
 | `--num-workers` | checkpoint 配置优先，否则 `0` | 测试 worker 数 |
 | `--device` | 自动 `cuda` / `cpu` | 测试设备 |
 | `--output-json` | `None` | 可选，把指标保存为 JSON |
 
-注意 `--seed` 与 `--split-ratio` 必须与训练时一致，否则 train/val/test 样本划分会变化。
+测试脚本读取数据集 manifest 中的指定 split，不再通过 checkpoint seed 或 split ratio 重建划分。数据目录需提供 `train.jsonl` / `val.jsonl` / `test.jsonl`，或在 `manifest.jsonl` 每行写入 `split` 字段。
 
 ### 11.5 checkpoint 与评估
 

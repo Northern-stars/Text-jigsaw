@@ -22,13 +22,15 @@ from Solver.agent.mangazero_jigsaw_solver import (
     jigsaw_cross_entropy,
     recover_canonical_batch,
 )
-from Solver.env.mangazero_panel_env import MangaZeroPanelOrderingDataset, collate_panel_ordering_batch
+from Solver.data.panel_ordering_dataset import (
+    MangaZeroPanelOrderingDataset,
+    collate_panel_ordering_batch,
+    load_panel_ordering_splits,
+)
 from Solver.train_mangazero_panel_ordering import (
     format_split_metrics,
     ordering_metrics,
-    parse_split_ratio,
     save_metrics_json,
-    split_dataset,
 )
 
 try:
@@ -42,7 +44,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-dir", type=Path, required=True)
     parser.add_argument("--epoch", type=int, default=70)
     parser.add_argument("--epochs", type=int, default=None)
-    parser.add_argument("--split-ratio", default="0.8,0.1,0.1")
     parser.add_argument("--test-per-epoch", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -79,15 +80,11 @@ def main() -> None:
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
-    split_ratio = parse_split_ratio(args.split_ratio)
-
-    full_dataset = MangaZeroPanelOrderingDataset(
+    train_dataset, val_dataset, test_dataset = load_panel_ordering_splits(
         dataset_dir=args.dataset_dir,
-        split="all",
         image_size=(args.image_width, args.image_height),
         use_layout=args.use_layout,
     )
-    train_dataset, val_dataset, test_dataset = split_dataset(full_dataset, split_ratio, args.seed)
     print(
         "dataset_split "
         f"train={len(train_dataset)} val={len(val_dataset)} test={len(test_dataset)}",

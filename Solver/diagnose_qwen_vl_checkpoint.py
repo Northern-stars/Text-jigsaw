@@ -29,8 +29,7 @@ sys.path.append(".")
 
 from torch.utils.data import DataLoader
 
-from Solver.env.mangazero_panel_env import MangaZeroPanelOrderingDataset, collate_panel_ordering_batch
-from Solver.train_mangazero_panel_ordering import parse_split_ratio, split_dataset
+from Solver.data.panel_ordering_dataset import MangaZeroPanelOrderingDataset, collate_panel_ordering_batch
 from Solver.train_mangazero_qwen_vl_autoregressive import build_model, load_checkpoint
 from Solver.test_mangazero_qwen_vl_autoregressive import with_model_defaults
 
@@ -241,16 +240,14 @@ def main() -> None:
 
     batch = None
     if args.dataset_dir is not None:
-        split_ratio = parse_split_ratio(str(merged_config.get("split_ratio", "0.8,0.1,0.1")))
         image_width = int(merged_config.get("image_width", 224))
         image_height = int(merged_config.get("image_height", 224))
-        dataset = MangaZeroPanelOrderingDataset(
+        train_dataset = MangaZeroPanelOrderingDataset(
             args.dataset_dir,
-            split="all",
+            split="train",
             image_size=(image_width, image_height),
             use_layout=False,
         )
-        train_dataset, _, _ = split_dataset(dataset, split_ratio, args.seed)
         loader = DataLoader(
             train_dataset,
             batch_size=1,

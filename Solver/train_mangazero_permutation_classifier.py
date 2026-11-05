@@ -19,16 +19,18 @@ from Solver.agent.mangazero_permutation_classifier import (
     MangaZeroPermutationClassifier,
     permutation_cross_entropy,
 )
-from Solver.env.mangazero_panel_env import MangaZeroPanelOrderingDataset, collate_panel_ordering_batch
+from Solver.data.panel_ordering_dataset import (
+    MangaZeroPanelOrderingDataset,
+    collate_panel_ordering_batch,
+    load_panel_ordering_splits,
+)
 from Solver.train_mangazero_panel_ordering import (
     format_metrics,
     format_split_metrics,
     gather_batch_by_order,
     ordering_metrics,
-    parse_split_ratio,
     reorder_nested_list,
     save_metrics_json,
-    split_dataset,
 )
 
 try:
@@ -43,7 +45,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--solver-type", default="visual", choices=("visual", "text", "multimodal"))
     parser.add_argument("--epoch", type=int, default=10, help="Total number of training epochs.")
     parser.add_argument("--epochs", type=int, default=None, help="Alias of --epoch.")
-    parser.add_argument("--split-ratio", default="0.8,0.1,0.1")
     parser.add_argument("--test-per-epoch", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -81,7 +82,6 @@ def main() -> None:
     args = parse_args()
     if args.epochs is not None:
         args.epoch = args.epochs
-    split_ratio = parse_split_ratio(args.split_ratio)
     if args.test_per_epoch <= 0:
         raise ValueError("--test-per-epoch must be positive")
 
@@ -89,13 +89,11 @@ def main() -> None:
     device = torch.device(args.device)
     use_layout = args.use_layout
 
-    full_dataset = MangaZeroPanelOrderingDataset(
+    train_dataset, val_dataset, test_dataset = load_panel_ordering_splits(
         dataset_dir=args.dataset_dir,
-        split="all",
         image_size=(args.image_width, args.image_height),
         use_layout=use_layout,
     )
-    train_dataset, val_dataset, test_dataset = split_dataset(full_dataset, split_ratio, args.seed)
     print(
         "dataset_split "
         f"train={len(train_dataset)} "

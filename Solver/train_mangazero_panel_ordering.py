@@ -4,19 +4,22 @@ from __future__ import annotations
 
 import argparse
 import json
-import random
 import sys
 from pathlib import Path
 from statistics import mean
 from typing import Any
 
 import torch
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 
 sys.path.append(".")
 
 from Solver.agent.mangazero_set2seq_solver import MangaZeroSetToSequenceSolver, pointer_cross_entropy
-from Solver.env.mangazero_panel_env import MangaZeroPanelOrderingDataset, collate_panel_ordering_batch
+from Solver.data.panel_ordering_dataset import (
+    MangaZeroPanelOrderingDataset,
+    collate_panel_ordering_batch,
+    load_panel_ordering_splits,
+)
 
 try:
     from tqdm import tqdm
@@ -30,7 +33,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--solver-type", default="visual", choices=("visual", "text", "multimodal"))
     parser.add_argument("--epoch", type=int, default=10, help="Total number of training epochs.")
     parser.add_argument("--epochs", type=int, default=None, help="Alias of --epoch.")
-    parser.add_argument("--split-ratio", default="0.8,0.1,0.1")
     parser.add_argument("--test-per-epoch", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -68,20 +70,17 @@ def main() -> None:
     args = parse_args()
     if args.epochs is not None:
         args.epoch = args.epochs
-    split_ratio = parse_split_ratio(args.split_ratio)
     if args.test_per_epoch <= 0:
         raise ValueError("--test-per-epoch must be positive")
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
     use_layout = args.use_layout
 
-    full_dataset = MangaZeroPanelOrderingDataset(
+    train_dataset, val_dataset, test_dataset = load_panel_ordering_splits(
         dataset_dir=args.dataset_dir,
-        split="all",
         image_size=(args.image_width, args.image_height),
         use_layout=use_layout,
     )
-    train_dataset, val_dataset, test_dataset = split_dataset(full_dataset, split_ratio, args.seed)
     print(
         "dataset_split "
         f"train={len(train_dataset)} "
@@ -169,36 +168,6 @@ def main() -> None:
         save_metrics_json(args.save_dir / "test.json", test_metrics)
     else:
         print("test skipped: no test split available")
-
-
-def parse_split_ratio(raw_ratio: str) -> tuple[float, float, float]:
-    values = tuple(float(item) for item in raw_ratio.split(","))
-    if len(values) != 3:
-        raise ValueError("--split-ratio must contain three comma-separated values")
-    total = sum(values)
-    if total <= 0:
-        raise ValueError("--split-ratio sum must be positive")
-    return tuple(value / total for value in values)
-
-
-def split_dataset(
-    dataset: MangaZeroPanelOrderingDataset,
-    ratio: tuple[float, float, float],
-    seed: int,
-) -> tuple[Subset, Subset, Subset]:
-    indices = list(range(len(dataset)))
-    rng = random.Random(seed)
-    rng.shuffle(indices)
-    train_end = round(len(indices) * ratio[0])
-    val_end = train_end + round(len(indices) * ratio[1])
-    train_indices = indices[:train_end]
-    val_indices = indices[train_end:val_end]
-    test_indices = indices[val_end:]
-    return (
-        Subset(dataset, train_indices),
-        Subset(dataset, val_indices),
-        Subset(dataset, test_indices),
-    )
 
 
 def train_one_epoch(

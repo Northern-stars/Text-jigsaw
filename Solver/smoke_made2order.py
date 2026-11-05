@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 sys.path.append(".")
 
 from Solver.agent.made2order_set2order_solver import Made2OrderPanelOrderingSolver
-from Solver.env.mangazero_panel_env import MangaZeroPanelOrderingDataset, collate_panel_ordering_batch
+from Solver.data.panel_ordering_dataset import MangaZeroPanelOrderingDataset, collate_panel_ordering_batch
 
 
 def parse_args() -> argparse.Namespace:

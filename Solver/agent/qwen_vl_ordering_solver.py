@@ -63,6 +63,7 @@ class QwenVLOrderingSolver(VLMOrderingSolver):
         model_name: str = "Qwen/Qwen2.5-VL-3B-Instruct",
         panel_count: Optional[int] = None,
         *,
+        revision: str | None = None,
         torch_dtype: str = "bfloat16",
         attn_implementation: str | None = "sdpa",
         min_pixels: int | None = None,
@@ -93,6 +94,7 @@ class QwenVLOrderingSolver(VLMOrderingSolver):
         answer_generator: Any = None,
     ) -> None:
         self.model_name = model_name
+        self.model_revision = revision
         self.start_index = int(start_index)
         self.max_new_tokens = int(max_new_tokens)
         self.strict_answer = bool(strict_answer)
@@ -106,6 +108,8 @@ class QwenVLOrderingSolver(VLMOrderingSolver):
             ) from exc
 
         processor_kwargs: dict[str, Any] = {"trust_remote_code": trust_remote_code}
+        if revision is not None:
+            processor_kwargs["revision"] = revision
         if min_pixels is not None:
             processor_kwargs["min_pixels"] = int(min_pixels)
         if max_pixels is not None:
@@ -116,6 +120,8 @@ class QwenVLOrderingSolver(VLMOrderingSolver):
             "trust_remote_code": trust_remote_code,
             "torch_dtype": parse_torch_dtype(torch_dtype),
         }
+        if revision is not None:
+            model_kwargs["revision"] = revision
         if attn_implementation:
             model_kwargs["attn_implementation"] = attn_implementation
         if load_in_4bit:
@@ -240,6 +246,11 @@ class QwenVLOrderingSolver(VLMOrderingSolver):
 
             prompt_inputs = self._encode_messages(self.prompt_generator(panels, texts))
             full_inputs = self._encode_messages(self._chat_messages(panels, texts, order))
+            input_device = next(self.backbone.parameters()).device
+            full_inputs = {
+                key: value.to(input_device) if hasattr(value, "to") else value
+                for key, value in full_inputs.items()
+            }
 
             prompt_len = common_prefix_length(
                 prompt_inputs["input_ids"][0],
@@ -339,7 +350,7 @@ class QwenVLOrderingSolver(VLMOrderingSolver):
                 for name, tensor in self.backbone.state_dict().items()
                 if "lora_" in name
             }
-        return {"backbone": backbone_state, "model_name": self.model_name}
+        return {"backbone": backbone_state, "model_name": self.model_name, "revision": self.model_revision}
 
     def load_trainable_state_dict(self, state_dict: dict[str, Any]) -> None:
         backbone_state = state_dict.get("backbone", state_dict)

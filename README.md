@@ -29,6 +29,8 @@ Text-jigsaw/
 │   ├── create_jigsaw_ocr_dataset.py # 按网格切分页面为拼图 piece，生成字符级标签
 │   └── generate_visualization.py  # 报纸页面图像 embedding 的 TSNE 可视化
 ├── Solver/                        # 求解器与训练代码
+│   ├── data/                      # 统一 ordering puzzle Dataset、manifest split 与 batch collate
+│   │   └── panel_ordering_dataset.py
 │   ├── env/                       # RL/数据集环境
 │   │   ├── jigsaw_env.py          # 3x3 文本拼图环境（固定中心块 + swap 动作）
 │   │   └── mangazero_panel_env.py # MangaZero panel 排序数据集与环境
@@ -65,6 +67,7 @@ Text-jigsaw/
 - `TextJigsawEnv`：3x3 文本拼图环境，固定中心块，动作是交换两个非中心位置，奖励由正确相邻对、正确位置和完成奖励组成。
 - DQN solver：支持纯视觉、纯文本、多模态三种输入，统一入口为 `python Solver/train_rl.py`。
 - MangaZero panel 排序 solver：提供 set-to-sequence pointer 模型和全排列分类模型两个方案，分别用 `train_mangazero_panel_ordering.py` 与 `train_mangazero_permutation_classifier.py` 训练。
+- 所有 panel-ordering 训练入口共用 `Solver/data/panel_ordering_dataset.py`，按 ordering manifest 的 `train` / `val` / `test` split 读取样本；数据集需提供对应 split 清单或带 `split` 字段的合并 manifest。
 
 ## 使用提示
 

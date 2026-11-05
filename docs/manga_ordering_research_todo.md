@@ -1,99 +1,87 @@
-﻿# Manga Ordering 研究提案与项目 TODO
+# Manga Ordering 研究提案与项目 TODO
 
 相关论文：EACL *CHROMIC: Chronological Reasoning Across Multi-Panel Comics*。
 
 ## 0. 当前进度
 
-- 数据集收集基本完成，后续视情况补充。
-- 日文 OCR、日文翻译、OCR 结果改善的思路已经明确，但尚未落地实现。
-- 对比大模型尚未挑选，对比实验尚未开始。
-- 当前 solver 还不是真正的多模态 solver，视觉与语言模态未在 decoder 中显式分开。
+- 数据集收集基本完成：日漫（Manga109 / MangaZero）、美漫（COMICS / COMIX）均有本地 raw 与 ordering 构建脚本。
+- 当前 solver：QwenVL + LoRA（classifier / autoregressive 两种 head），另有独立 Made2Order 视觉 transformer solver。
+- 尚未落地：专项 SFT 数据规模实验、风格混合训练、推理策略对比（CoT / 结构化 CoT）。
 - Human baseline 与数据集难度评估尚未设计。
 
 ## 1. 研究提案 statement
 
-研究方向：延续李飞飞团队的研究表述，围绕视觉模态与语言模态在多模态任务中的必要性展开。以往研究大多用文字描述视觉模态信息，而漫画数据天然是多模态数据，补全了这块实验空白。
+研究方向从「提升漫画理解能力」收窄为：**通过受控干预，研究训练数据规模、风格多样性和推理策略如何影响 LVLM 的漫画面板排序能力**。核心不是提出更好的排序模型，而是系统研究哪些训练与推理干预能够改善排序、这些改善在什么条件下成立、哪些缺陷仍然存在。
 
-### TODO
+完整提案见 [lvlm_panel_reordering_intervention_proposal.md](lvlm_panel_reordering_intervention_proposal.md)。
 
-- [ ] 起草一页研究提案，包含：研究问题、动机/空白、贡献、方法概述、实验计划、预期结果。
-- [ ] 明确核心研究问题：当视觉与语言模态同时存在时，各模态的边际贡献是什么？不同任务类型下如何变化？
-- [ ] 与 CHROMIC 及其他漫画理解工作做定位对比；本工作的扩展点是模态必要性分析加更多 puzzle 变体。
-- [ ] 补充引用：Manga109、CHROMIC、漫画理解、OCR、翻译相关文献。
-- [ ] 定义成功指标：human baseline 水平、solver 表现、消融稳定性。
+## 2. Research Questions
 
-## 2. 问题设计
+- **RQ1 — Data Scaling**：增加漫画训练数据规模，能否持续提升 Panel Reordering 表现？提升是否存在边际收益递减？
+- **RQ2 — Style Diversity**：在相同训练预算下，日漫与美漫混合训练能否改善跨风格泛化？是否存在对某一风格的性能权衡？
+- **RQ3 — Inference Strategies**：CoT 与结构化推理提示能否进一步改善排序？它们的收益是否会随数据规模、漫画风格或文本线索可用性而变化？
 
-### 2.1 Puzzle 参数
+## 3. 实验计划
 
-现有参数：panel 数量、stride 采样步长。
+### 3.1 Baseline（零样本）
 
-- [ ] 梳理当前样本级参数及其覆盖范围。
-- [ ] 增加难度相关参数：每个 puzzle 的页面数、窗口重叠、干扰项数量、置换噪声程度、是否展示/遮蔽对话文本。
-- [ ] 在采样时加入难度控制：视觉相似页面、阅读方向歧义、近似重复 panel。
-- [ ] 生成带难度标注的 puzzle 变体矩阵。
+- [ ] 用开源 LVLM（Qwen2.5-VL 等）在 Panel Reordering 上跑零样本排序。
+- [ ] 建立统一评测协议：Exact sequence accuracy、Pairwise ordering accuracy，按日漫 / 美漫 / 跨风格切分报告。
 
-### 2.2 Puzzle 子任务
+### 3.2 Data Scaling
 
-- [ ] 保留 panel ordering 作为主任务。
-- [ ] 对照 Manga109 注解（frame、text box、character ID）评估候选子任务：
-  - 漫画内容描述 / 生成字幕
-  - 定位特定信息所在位置
-  - 跨 panel 追踪人物位置
-  - 对话框归属定位（这句话是谁说的）
-- [ ] 数据集稳定后，选择一到两个高价值子任务落地。
+- [ ] 从日漫 ordering 数据中按作品级划分抽取 5k / 10k / 20k / 40k 训练子集。
+- [ ] 用相同超参数分别做 SFT（QwenVL + LoRA），记录各规模 checkpoint 的排序指标。
+- [ ] 绘制数据规模-准确率曲线，判断边际收益递减是否存在。
 
-## 3. 算法设计
+### 3.3 Style mixing
 
-当前 solver：QwenVL + LoRA + pointer decoder。
+- [ ] 固定总样本量和训练步数，构造「纯日漫」「纯美漫」「日漫:美漫 = 1:1（按作品数均衡）」三种训练集。
+- [ ] 在日漫、美漫、跨风格测试集上分别评估，报告风格权衡。
 
-- [ ] 重构 decoder，使视觉与文本模态输入在 decoder 中显式分开。
-- [ ] 定义联合表示：视觉、文本、对话、布局信息。
-- [ ] 训练时同时支持 teacher forcing 与自回归解码。
-- [ ] 保持与现有 checkpoint 格式兼容。
-- [ ] 设计消融：仅视觉、仅文本、联合输入。
+### 3.4 Inference strategies
 
-## 4. Human baseline 与数据集难度
+- [ ] 实现三种 prompt：直接输出排序、普通 CoT（先解释再排序）、结构化 CoT（逐格列出关键线索后排序）。
+- [ ] 对同一组 checkpoint 做三种推理策略对比，解析输出为合法排序后计算指标。
+- [ ] 结合 mask / OCR-only 辅助条件，分析文本线索可用性是否调节推理策略收益。
 
-### 4.1 Human baseline
+## 4. 数据与评测
 
-- [ ] 设计人类评测流程。
-- [ ] 目标准确率/一致性达到 80-90% 以上。
-- [ ] 确定标注人数、样本量、一致性指标。
-- [ ] 区分简单/困难样本并单独分析。
+### 4.1 数据构成
 
-### 4.2 数据集难度
+- 日漫：Manga109、MangaZero（`Mangazero/build_dataset.py` 产出 ordering puzzle）。
+- 美漫：COMICS（comics 旧集）、COMIX（Hugging Face pages，`comix/` 产出 ordering puzzle）。
 
-- [ ] 统计难度指标：歧义程度、视觉相似度、panel 多样性。
-- [ ] 条件允许时与 CHROMIC 对比。
-- [ ] 判断当前数据集能否有效区分不同方法。
+### 4.2 作品级划分
 
-## 5. OCR 与翻译 pipeline
+- [ ] 训练 / 验证 / 测试按作品划分，避免同一作品跨集合泄露。
+- [ ] 分别报告日漫、美漫、跨风格三类测试结果。
 
-- [ ] 选择日文 OCR 引擎并在漫画 panel 上验证。
-- [ ] 确定翻译方向：日文翻译为中文或英文。
-- [ ] 将 OCR 与翻译接入现有数据 pipeline。
-- [ ] 建立小规模 OCR/翻译评测集，持续跟踪准确率。
+### 4.3 辅助实验
 
-## 6. 模型选择与对比实验
+- [ ] mask / OCR-only 作为辅助条件，用于解释推理策略收益来源（设计见 [panel_dialog_bbox_and_mask_mode_design.md](panel_dialog_bbox_and_mask_mode_design.md)）。
+- [ ] 文本线索可用性（有无 OCR）作为调节变量纳入 Inference 分析。
 
-- [ ] 准备对比模型短名单：多模态 LLM 与视觉语言 baseline。
-- [ ] 用同一评测协议跑 panel ordering 与已选子任务。
-- [ ] 记录模型配置、prompt、推理设置。
-- [ ] 输出 baseline 表格，包含 human 表现。
+## 5. 预期贡献
 
-## 7. 优先级
+- 提供漫画专项 SFT 数据规模效应的实证结果。
+- 分离训练样本数量与风格多样性对排序能力及跨风格泛化的影响。
+- 评估推理提示策略在漫画排序中的有效性及其局限。
 
-1. 起草研究提案。
-2. 设计 human baseline 与数据集难度评估。
-3. 设计更多 puzzle 变体与子任务。
-4. 重构多模态 solver，显式分离视觉/语言模态。
-5. 实现 OCR 与翻译 pipeline。
-6. 开展 human baseline 与对比实验。
+即使 CoT 无效、性能饱和、或混合风格只对部分测试集有效，仍可形成有解释力的研究结论。
 
-## 8. 开放问题
+## 6. 优先级
 
-- 是否需要新的任务体系，还是现有任务足够？
-- 端到端指标如何定义：序列准确率、逐步准确率，还是 pairwise？
-- OCR 质量达到什么水平才能避免文本噪声主导结果？
-- 如何把模态必要性分析与模型骨架带来的影响区分开？
+1. 建立零样本 Baseline 与统一评测协议。
+2. 完成 Data Scaling 实验谱系。
+3. 完成 Style mixing 实验。
+4. 实现并比较三种推理策略。
+5. 补充 mask / OCR-only 辅助分析。
+6. 设计 human baseline 与数据集难度评估（可选增强）。
+
+## 7. 开放问题
+
+- Scaling 实验的最小/最大数据规模如何确定，是否受 OCR 质量影响。
+- 日漫与美漫的样本难度差异如何控制，避免风格权衡被难度混淆。
+- CoT 输出解析失败率是否成为第二种混淆因素。
+- Human baseline 是否纳入正式实验设计。
