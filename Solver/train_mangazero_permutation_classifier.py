@@ -47,6 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=None, help="Alias of --epoch.")
     parser.add_argument("--test-per-epoch", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--grad-accum-steps", type=int, default=8, help="Accumulate gradients over this many mini-batches before each optimizer update.")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -84,6 +85,8 @@ def main() -> None:
         args.epoch = args.epochs
     if args.test_per_epoch <= 0:
         raise ValueError("--test-per-epoch must be positive")
+    if args.batch_size <= 0 or args.grad_accum_steps <= 0:
+        raise ValueError("--batch-size and --grad-accum-steps must be positive")
 
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
@@ -123,7 +126,7 @@ def main() -> None:
 
     best_val = -1.0
     for epoch in range(start_epoch, args.epoch + 1):
-        train_metrics = train_one_epoch(model, train_loader, optimizer, device, use_layout, args.grad_clip_norm, epoch)
+        train_metrics = train_one_epoch(model, train_loader, optimizer, device, use_layout, args.grad_clip_norm, args.grad_accum_steps, epoch)
         val_metrics = evaluate(model, val_loader, device, use_layout) if val_loader is not None else {}
         test_metrics = None
         if test_loader is not None and epoch % args.test_per_epoch == 0:
@@ -190,12 +193,14 @@ def train_one_epoch(
     device: torch.device,
     use_layout: bool,
     grad_clip_norm: float,
+    grad_accum_steps: int,
     epoch: int,
 ) -> dict[str, float]:
     model.train()
+    optimizer.zero_grad(set_to_none=True)
     losses = []
     progress = tqdm(loader, desc=f"train epoch {epoch}", dynamic_ncols=True) if tqdm is not None else loader
-    for batch in progress:
+    for batch_index, batch in enumerate(progress, start=1):
         batch = randomize_training_batch(batch, use_layout)
         batch = move_batch(batch, device, use_layout)
         logits = model(
@@ -204,10 +209,11 @@ def train_one_epoch(
             dialog_texts=batch.get("dialog_texts"),
         )
         loss = permutation_cross_entropy(logits, batch["target_order"], model)
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
-        optimizer.step()
+        (loss / grad_accum_steps).backward()
+        if batch_index % grad_accum_steps == 0 or batch_index == len(loader):
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
         losses.append(float(loss.item()))
         if tqdm is not None:
             progress.set_postfix({"loss": f"{loss.item():.4f}"})

@@ -46,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--test-per-epoch", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--grad-accum-steps", type=int, default=8, help="Accumulate gradients over this many mini-batches before each optimizer update.")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
@@ -74,6 +75,8 @@ def main() -> None:
         args.epoch = args.epochs
     if args.test_per_epoch <= 0:
         raise ValueError("--test-per-epoch must be positive")
+    if args.batch_size <= 0 or args.grad_accum_steps <= 0:
+        raise ValueError("--batch-size and --grad-accum-steps must be positive")
     if args.num_workers < 0:
         raise ValueError("--num-workers cannot be negative")
 
@@ -173,7 +176,8 @@ def train_one_epoch(
     losses = []
     class_accuracy = []
     progress = tqdm(loader, desc=f"train epoch {epoch}", dynamic_ncols=True) if tqdm is not None else loader
-    for batch in progress:
+    optimizer.zero_grad(set_to_none=True)
+    for batch_index, batch in enumerate(progress, start=1):
         prepared = prepare_self_supervised_batch(batch, model)
         prepared = move_batch(prepared, device, args.use_layout)
         logits = model(
@@ -182,11 +186,12 @@ def train_one_epoch(
         )
         loss = jigsaw_cross_entropy(logits, prepared["target_order"], model)
         class_targets = model.target_to_class_indices(prepared["target_order"])
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        if args.grad_clip_norm > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm)
-        optimizer.step()
+        (loss / args.grad_accum_steps).backward()
+        if batch_index % args.grad_accum_steps == 0 or batch_index == len(loader):
+            if args.grad_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
         losses.append(float(loss.item()))
         class_accuracy.append(float(logits.argmax(dim=-1).eq(class_targets).float().mean().item()))
         if tqdm is not None:
