@@ -105,12 +105,25 @@ class SplitManifests:
 def resolve_split_counts(
     args: Any, default_puzzle_num: int
 ) -> tuple[int, int, int]:
-    """Resolve explicit train/val/test counts, falling back to puzzle_num as train."""
+    """Resolve train/val/test counts from explicit quotas or a total budget.
+
+    When no per-split quota is supplied, ``puzzle_num`` is treated as the total
+    number of puzzles and is divided into 80% train, 10% validation, and 10%
+    test. Integer rounding is deterministic: train and validation use floors,
+    and test receives the remainder so the three counts always sum to the
+    requested total. Supplying any positive per-split quota keeps the explicit
+    quota behavior for backwards compatibility.
+    """
     train = int(getattr(args, "train_puzzles", 0) or 0)
     val = int(getattr(args, "val_puzzles", 0) or 0)
     test = int(getattr(args, "test_puzzles", 0) or 0)
-    if train <= 0 and val <= 0 and test <= 0:
-        train = int(getattr(args, "puzzle_num", default_puzzle_num) or 0)
     if train < 0 or val < 0 or test < 0:
         raise ValueError("split puzzle counts must be non-negative")
+    if train == 0 and val == 0 and test == 0:
+        total = int(getattr(args, "puzzle_num", default_puzzle_num) or 0)
+        if total < 0:
+            raise ValueError("puzzle_num must be non-negative")
+        train = total * 8 // 10
+        val = total // 10
+        test = total - train - val
     return train, val, test

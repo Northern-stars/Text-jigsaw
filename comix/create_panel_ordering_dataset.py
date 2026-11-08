@@ -14,6 +14,7 @@ existing MangaZero training scripts can consume it directly:
 
     third_party/comics/panel_ordering_dataset/
       manifest.jsonl
+      train.jsonl, val.jsonl, test.jsonl
       meta.json
       000000/sample.json
       000000/panels_padded/input_00.jpg ...
@@ -77,7 +78,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--panel-count", type=int, default=6)
     parser.add_argument("--stride", type=int, default=3)
     parser.add_argument("--shuffle-per-window", type=int, default=1)
-    parser.add_argument("--puzzle-num", type=int, default=500)
+    parser.add_argument(
+        "--puzzle-num", type=int, default=500,
+        help="Total puzzle budget; defaults to 80%% train, 10%% validation, 10%% test.",
+    )
+    parser.add_argument(
+        "--train-puzzles", type=int, default=0,
+        help="Exact train count; setting any split count enables explicit quotas.",
+    )
+    parser.add_argument(
+        "--val-puzzles", type=int, default=0,
+        help="Exact validation count; setting any split count enables explicit quotas.",
+    )
+    parser.add_argument(
+        "--test-puzzles", type=int, default=0,
+        help="Exact test count; setting any split count enables explicit quotas.",
+    )
     parser.add_argument("--target-width", type=int, default=224)
     parser.add_argument("--target-height", type=int, default=224)
     parser.add_argument("--image-format", default="jpg", choices=("jpg", "png"))
@@ -296,6 +312,11 @@ def main() -> None:
 
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
+    from dataset_split_utils import SplitBudget, SplitManifests, resolve_split_counts
+
+    train_q, val_q, test_q = resolve_split_counts(args, default_puzzle_num=args.puzzle_num)
+    budget = SplitBudget(train=train_q, val=val_q, test=test_q)
+    split_manifests = SplitManifests(output_dir)
 
     ad_pages = load_ad_pages(args.ad_pages)
     panels = load_panels(args.panels_dir, args.ocr_csv, ad_pages)
@@ -306,19 +327,22 @@ def main() -> None:
     page_group_count = len(page_groups)
     panel_count_total = len(panels)
     puzzle_count = 0
-    manifest_path = output_dir / "manifest.jsonl"
-
-    with manifest_path.open("w", encoding="utf-8") as manifest_handle:
+    try:
         for (comic_no, page_no), page_panels in sorted(page_groups.items()):
+            if budget.done:
+                break
+            split_name = budget.active_split
+            if split_name is None:
+                break
             page_key = f"{comic_no}_{page_no}"
             for start in range(0, len(page_panels), args.stride):
-                if puzzle_count >= args.puzzle_num:
+                if budget.done:
                     break
                 if start + args.panel_count > len(page_panels):
                     continue
                 window = page_panels[start:start + args.panel_count]
                 for _ in range(args.shuffle_per_window):
-                    if puzzle_count >= args.puzzle_num:
+                    if budget.done or budget.remaining <= 0:
                         break
                     sample_json = write_puzzle_directory(
                         puzzle_index=puzzle_count,
@@ -329,21 +353,24 @@ def main() -> None:
                         image_format=args.image_format,
                         rng=rng,
                     )
-                    manifest_handle.write(
-                        json.dumps(
-                            {
-                                "puzzle_index": puzzle_count,
-                                "sequence_id": sample_json["sequence_id"],
-                                "sample_path": f"{puzzle_count:06d}/sample.json",
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
+                    split_manifests.write(
+                        split_name,
+                        {
+                            "puzzle_index": puzzle_count,
+                            "sequence_id": sample_json["sequence_id"],
+                            "sample_path": f"{puzzle_count:06d}/sample.json",
+                            "page_key": page_key,
+                        },
                     )
-                    manifest_handle.flush()
+                    split_manifests.flush()
+                    budget.add(1)
                     puzzle_count += 1
-            if puzzle_count >= args.puzzle_num:
-                break
+                    if budget.active_split != split_name:
+                        break
+                if budget.active_split != split_name:
+                    break
+    finally:
+        split_manifests.close()
 
     meta = {
         "source": "COMICS",
@@ -358,6 +385,12 @@ def main() -> None:
         "page_group_count": page_group_count,
         "panel_count_total": panel_count_total,
         "puzzle_count": puzzle_count,
+        "split_counts": budget.totals,
+        "split_target_counts": {
+            "train": train_q,
+            "val": val_q,
+            "test": test_q,
+        },
     }
     with (output_dir / "meta.json").open("w", encoding="utf-8") as handle:
         json.dump(meta, handle, ensure_ascii=False, indent=2)

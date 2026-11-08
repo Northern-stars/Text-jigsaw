@@ -147,13 +147,13 @@ def parse_args(mode: str = "all") -> argparse.Namespace:
             "--puzzle-num",
             type=int,
             default=500,
-            help="Fallback train puzzle count when --train-puzzles is 0.",
+            help="Total puzzle budget; defaults to 80%% train, 10%% validation, 10%% test.",
         )
         parser.add_argument(
             "--train-puzzles",
             type=int,
             default=0,
-            help="Exact number of train puzzles to generate (0 uses --puzzle-num).",
+            help="Exact train count; setting any split count enables explicit quotas.",
         )
         parser.add_argument(
             "--val-puzzles",
@@ -834,13 +834,13 @@ def build_ordering_from_raw(args: argparse.Namespace) -> None:
             page_panels.sort(key=lambda p: p.record.panel_index_in_page)
             group_name, page_key = _split_group_key(group_key)
             for start in range(0, len(page_panels), args.stride):
-                if budget.done or puzzle_count >= args.puzzle_num:
+                if budget.done:
                     break
                 if start + args.panel_count > len(page_panels):
                     continue
                 window = page_panels[start:start + args.panel_count]
                 for _ in range(args.shuffle_per_window):
-                    if budget.done or puzzle_count >= args.puzzle_num:
+                    if budget.done:
                         break
                     if budget.remaining <= 0:
                         break
@@ -867,7 +867,7 @@ def build_ordering_from_raw(args: argparse.Namespace) -> None:
                     puzzle_count += 1
                     if budget.active_split != split_name:
                         break
-            if budget.done or puzzle_count >= args.puzzle_num:
+            if budget.done:
                 break
     finally:
         split_manifests.close()

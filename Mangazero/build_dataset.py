@@ -81,10 +81,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--shuffle-per-window", type=int, default=1)
     parser.add_argument("--target-width", type=int, default=224)
     parser.add_argument("--target-height", type=int, default=224)
-    parser.add_argument("--puzzle-num", type=int, default=500)
-    parser.add_argument("--train-puzzles", type=int, default=0, help="Exact train puzzle count (0 uses puzzle_num).")
-    parser.add_argument("--val-puzzles", type=int, default=0, help="Exact val puzzle count.")
-    parser.add_argument("--test-puzzles", type=int, default=0, help="Exact test puzzle count.")
+    parser.add_argument(
+        "--puzzle-num", type=int, default=500,
+        help="Total puzzle budget; defaults to 80%% train, 10%% validation, 10%% test.",
+    )
+    parser.add_argument(
+        "--train-puzzles", type=int, default=0,
+        help="Exact train count; setting any split count enables explicit quotas.",
+    )
+    parser.add_argument(
+        "--val-puzzles", type=int, default=0,
+        help="Exact validation count; setting any split count enables explicit quotas.",
+    )
+    parser.add_argument(
+        "--test-puzzles", type=int, default=0,
+        help="Exact test count; setting any split count enables explicit quotas.",
+    )
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--disable-ocr", action="store_true")
     parser.add_argument("--skip-network-errors", action="store_true", default=True)
@@ -172,65 +184,76 @@ def main() -> None:
         puzzle_count = 0
         page_group_count = 0
         panel_count_total = 0
-        manifest_path = output_dir / "manifest.jsonl"
-        with manifest_path.open("w", encoding="utf-8") as manifest_handle:
-            for sample in dataset_iterable:
-                progress = dataset_iterable if tqdm is not None else None
-                prepared_panels = process_sample(
-                    sample=sample,
-                    raw_dir=raw_dir,
-                    target_size=(args.target_width, args.target_height),
-                    ocr=ocr,
-                    skip_ocr_errors=args.skip_ocr_errors,
-                    skip_network_errors=args.skip_network_errors,
-                    progress=progress,
-                )
-                if not prepared_panels:
-                    continue
-                group_key = f"{prepared_panels[0].record.manga_id}/{prepared_panels[0].record.chapter_id}"
-                page_groups = group_by_page(prepared_panels)
-                page_group_count += len(page_groups)
-                panel_count_total += len(prepared_panels)
-                for page_key, page_panels in page_groups.items():
-                    page_panels.sort(key=lambda panel: panel.record.panel_index_in_page)
-                    if getattr(args, "sort_panels_reading_order", False):
-                        page_panels = sort_prepared_panels_reading_order(
-                            page_panels,
-                            rtl=getattr(args, "reading_order_rtl", True),
-                        )
-                    for start in range(0, len(page_panels), args.stride):
-                        if puzzle_count >= args.puzzle_num:
-                            break
-                        if start + args.panel_count > len(page_panels):
-                            continue
-                        window = page_panels[start:start + args.panel_count]
-                        for _ in range(args.shuffle_per_window):
-                            if puzzle_count >= args.puzzle_num:
-                                break
-                            set_progress_status(progress, f"写入puzzle {puzzle_count + 1}/{args.puzzle_num}")
-                            sample_json = write_puzzle_directory(
-                                puzzle_index=puzzle_count,
-                                group_key=group_key,
-                                page_key=page_key,
-                                window=window,
-                                output_dir=output_dir,
-                                target_size=(args.target_width, args.target_height),
-                                image_format=args.image_format,
-                                rng=rng,
-                            )
-                            manifest_handle.write(json.dumps({
-                                "puzzle_index": puzzle_count,
-                                "sequence_id": sample_json["sequence_id"],
-                                "sample_path": f"{puzzle_count:06d}/sample.json",
-                            }, ensure_ascii=False) + "\n")
-                            manifest_handle.flush()
-                            puzzle_count += 1
-                    if puzzle_count >= args.puzzle_num:
-                        break
-                set_progress_status(progress, "等待下一页")
-                if puzzle_count >= args.puzzle_num:
+        for sample in dataset_iterable:
+            if budget.done:
+                break
+            progress = dataset_iterable if tqdm is not None else None
+            prepared_panels = process_sample(
+                sample=sample,
+                raw_dir=raw_dir,
+                target_size=(args.target_width, args.target_height),
+                ocr=ocr,
+                skip_ocr_errors=args.skip_ocr_errors,
+                skip_network_errors=args.skip_network_errors,
+                progress=progress,
+            )
+            if not prepared_panels:
+                continue
+            group_key = f"{prepared_panels[0].record.manga_id}/{prepared_panels[0].record.chapter_id}"
+            page_groups = group_by_page(prepared_panels)
+            page_group_count += len(page_groups)
+            panel_count_total += len(prepared_panels)
+            for page_key, page_panels in page_groups.items():
+                if budget.done:
                     break
+                split_name = budget.active_split
+                if split_name is None:
+                    break
+                page_panels.sort(key=lambda panel: panel.record.panel_index_in_page)
+                if getattr(args, "sort_panels_reading_order", False):
+                    page_panels = sort_prepared_panels_reading_order(
+                        page_panels,
+                        rtl=getattr(args, "reading_order_rtl", True),
+                    )
+                for start in range(0, len(page_panels), args.stride):
+                    if budget.done:
+                        break
+                    if start + args.panel_count > len(page_panels):
+                        continue
+                    window = page_panels[start:start + args.panel_count]
+                    for _ in range(args.shuffle_per_window):
+                        if budget.done or budget.remaining <= 0:
+                            break
+                        set_progress_status(progress, f"写入puzzle {puzzle_count + 1}/{args.puzzle_num}")
+                        sample_json = write_puzzle_directory(
+                            puzzle_index=puzzle_count,
+                            group_key=group_key,
+                            page_key=page_key,
+                            window=window,
+                            output_dir=output_dir,
+                            target_size=(args.target_width, args.target_height),
+                            image_format=args.image_format,
+                            rng=rng,
+                        )
+                        split_manifests.write(split_name, {
+                            "puzzle_index": puzzle_count,
+                            "sequence_id": sample_json["sequence_id"],
+                            "sample_path": f"{puzzle_count:06d}/sample.json",
+                            "page_key": page_key,
+                        })
+                        split_manifests.flush()
+                        budget.add(1)
+                        puzzle_count += 1
+                        if budget.active_split != split_name:
+                            break
+                    if budget.active_split != split_name:
+                        break
+                if budget.active_split != split_name:
+                    break
+            if budget.done:
+                break
 
+        split_manifests.close()
         meta = {
             "raw_dir": str(raw_dir),
             "source": "local raw MangaZero samples",
@@ -247,6 +270,12 @@ def main() -> None:
             "group_count": page_group_count,
             "panel_count_total": panel_count_total,
             "puzzle_count": puzzle_count,
+            "split_counts": budget.totals,
+            "split_target_counts": {
+                "train": train_q,
+                "val": val_q,
+                "test": test_q,
+            },
         }
         with (output_dir / "meta.json").open("w", encoding="utf-8") as handle:
             json.dump(meta, handle, ensure_ascii=False, indent=2)

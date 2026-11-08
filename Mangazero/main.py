@@ -94,10 +94,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-width", type=int, default=224)
     parser.add_argument("--target-height", type=int, default=224)
     parser.add_argument("--max-pages", type=int, default=None)
-    parser.add_argument("--puzzle-num", type=int, default=500)
-    parser.add_argument("--train-puzzles", type=int, default=0, help="Exact train puzzle count (0 uses puzzle_num).")
-    parser.add_argument("--val-puzzles", type=int, default=0, help="Exact val puzzle count.")
-    parser.add_argument("--test-puzzles", type=int, default=0, help="Exact test puzzle count.")
+    parser.add_argument(
+        "--puzzle-num", type=int, default=500,
+        help="Total puzzle budget; defaults to 80%% train, 10%% validation, 10%% test.",
+    )
+    parser.add_argument(
+        "--train-puzzles", type=int, default=0,
+        help="Exact train count; setting any split count enables explicit quotas.",
+    )
+    parser.add_argument(
+        "--val-puzzles", type=int, default=0,
+        help="Exact validation count; setting any split count enables explicit quotas.",
+    )
+    parser.add_argument(
+        "--test-puzzles", type=int, default=0,
+        help="Exact test count; setting any split count enables explicit quotas.",
+    )
     parser.add_argument("--streaming", action="store_true", default=True)
     parser.add_argument("--no-streaming", action="store_false", dest="streaming")
     parser.add_argument("--trust-remote-code", action="store_true")
@@ -185,8 +197,6 @@ def main() -> None:
         puzzle_count = 0
         page_group_count = 0
         panel_count_total = 0
-        manifest_path = output_dir / "manifest.jsonl"
-        manifest_handle = manifest_path.open("w", encoding="utf-8")
         for sample in dataset_iterable:
             if budget.done:
                 break
@@ -220,13 +230,13 @@ def main() -> None:
                         rtl=getattr(args, "reading_order_rtl", True),
                     )
                 for start in range(0, len(page_panels), args.stride):
-                    if budget.done or puzzle_count >= args.puzzle_num:
+                    if budget.done:
                         break
                     if start + args.panel_count > len(page_panels):
                         continue
                     window = page_panels[start:start + args.panel_count]
                     for _ in range(args.shuffle_per_window):
-                        if budget.done or puzzle_count >= args.puzzle_num:
+                        if budget.done:
                             break
                         if budget.remaining <= 0:
                             break
@@ -247,11 +257,9 @@ def main() -> None:
                             "sample_path": f"{puzzle_count:06d}/sample.json",
                             "page_key": page_key,
                         }
-                        manifest_handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
                         split_manifests.write(split_name, entry)
                         split_manifests.flush()
                         budget.add(1)
-                        manifest_handle.flush()
                         puzzle_count += 1
                         if budget.active_split != split_name:
                             break
@@ -260,11 +268,8 @@ def main() -> None:
                     if budget.active_split != split_name:
                         break
             set_progress_status(progress_bar, "等待下一页")
-            if puzzle_count >= args.puzzle_num:
+            if budget.done:
                 break
-            if puzzle_count >= args.puzzle_num:
-                break
-        manifest_handle.close()
         split_manifests.close()
 
         meta = {
@@ -284,6 +289,12 @@ def main() -> None:
             "page_group_count": page_group_count,
             "panel_count_total": panel_count_total,
             "puzzle_count": puzzle_count,
+            "split_counts": budget.totals,
+            "split_target_counts": {
+                "train": train_q,
+                "val": val_q,
+                "test": test_q,
+            },
             "text_note": "Puzzle text uses dialog_text generated from PaddleOCR only; caption is metadata only.",
         }
         with (output_dir / "meta.json").open("w", encoding="utf-8") as handle:
