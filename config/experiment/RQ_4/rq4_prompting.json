@@ -1,0 +1,7 @@
+{
+  "defaults": {
+    "manifest": null,
+    "split": "test",
+    "seed": 0
+  }
+}

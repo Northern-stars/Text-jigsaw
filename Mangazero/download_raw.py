@@ -7,6 +7,13 @@ should use build_dataset.py and should not need Hugging Face/network access.
 """
 
 from __future__ import annotations
+# Resolve the project config package when this file is run directly.
+import sys as _cli_sys
+from pathlib import Path as _CliPath
+_cli_root = next((p for p in _CliPath(__file__).resolve().parents if (p / "config" / "cli.py").is_file()), None)
+if _cli_root is not None and str(_cli_root) not in _cli_sys.path:
+    _cli_sys.path.insert(0, str(_cli_root))
+from config.cli import parse_args_with_config
 
 import argparse
 import json
@@ -44,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-network-errors", action="store_true", default=True)
     parser.add_argument("--no-skip-network-errors", action="store_false", dest="skip_network_errors")
     parser.add_argument("--overwrite", action="store_true")
-    return parser.parse_args()
+    return parse_args_with_config(parser, script_file=__file__)
 
 
 def main() -> None:

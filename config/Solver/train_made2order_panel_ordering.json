@@ -1,0 +1,27 @@
+{
+  "defaults": {
+    "dataset_dir": "Mangazero/ordering_dataset",
+    "max_samples": null,
+    "epoch": 10,
+    "epochs": null,
+    "test_per_epoch": 5,
+    "batch_size": 8,
+    "grad_accum_steps": 8,
+    "lr": 0.0001,
+    "weight_decay": 0.0001,
+    "num_workers": 0,
+    "panel_count": 6,
+    "image_width": 224,
+    "image_height": 224,
+    "patch_size": 16,
+    "dim": 256,
+    "heads": 4,
+    "decoder_dim": 64,
+    "grad_clip_norm": 1.0,
+    "save_dir": "Solver/checkpoints_made2order",
+    "load": null,
+    "save_every": 25,
+    "seed": 0,
+    "device": null
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "defaults": {
+    "dataset_dir": null,
+    "json": false,
+    "max_examples": 10,
+    "strict": true
+  }
+}

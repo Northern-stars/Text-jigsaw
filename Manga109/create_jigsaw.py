@@ -28,6 +28,13 @@ the requested piece resolution.
 """
 
 from __future__ import annotations
+# Resolve the project config package when this file is run directly.
+import sys as _cli_sys
+from pathlib import Path as _CliPath
+_cli_root = next((p for p in _CliPath(__file__).resolve().parents if (p / "config" / "cli.py").is_file()), None)
+if _cli_root is not None and str(_cli_root) not in _cli_sys.path:
+    _cli_sys.path.insert(0, str(_cli_root))
+from config.cli import parse_args_with_config
 
 import argparse
 import json
@@ -488,7 +495,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--books", nargs="*", help="Process only these book titles.")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--overwrite", action="store_true")
-    return p.parse_args()
+    return parse_args_with_config(p, script_file=__file__)
 
 
 def main() -> None:

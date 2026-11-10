@@ -1,0 +1,9 @@
+{
+  "defaults": {
+    "source": null,
+    "output": null,
+    "seed": 42,
+    "train_ratio": 0.8,
+    "val_ratio": 0.1
+  }
+}

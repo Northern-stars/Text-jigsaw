@@ -1,55 +1,88 @@
-from img2vec_pytorch import Img2Vec
-from PIL import Image
+"""Create a t-SNE visualization of newspaper page image embeddings."""
+
+from __future__ import annotations
+
+import argparse
 import glob
-import matplotlib.pyplot as plt
-from matplotlib.image import BboxImage
-from matplotlib.transforms import Bbox, TransformedBbox
-from sklearn.manifold import TSNE
 import sys
+from pathlib import Path
 
-# we load in the files that we'd like to visualize
-img_filepaths = glob.glob('../chronam-get-images/predicted/**/*.jpg', recursive=True)
+_project_root = next(
+    (parent for parent in Path(__file__).resolve().parents if (parent / "config" / "cli.py").is_file()),
+    None,
+)
+if _project_root is not None and str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
 
-# we use img2vec (https://github.com/christiansafka/img2vec)
-img2vec = Img2Vec(cuda=False, model='alexnet')
+from config.cli import parse_args_with_config
 
-# a list to store the embeddings
-img_vectors = []
 
-# iterates through image and uses img2vec to generate vector from image (img2vec -> https://github.com/christiansafka/img2vec)
-for filepath in img_filepaths:
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--input-glob",
+        default="../chronam-get-images/predicted/**/*.jpg",
+        help="Glob for page images; recursive patterns are supported.",
+    )
+    parser.add_argument("--output-dir", type=Path, default=Path("tests"))
+    parser.add_argument("--use-cuda", action="store_true")
+    parser.add_argument("--perplexity", type=float, default=20.0)
+    parser.add_argument("--random-state", type=int, default=10)
+    parser.add_argument("--figure-size", type=float, default=25.0)
+    parser.add_argument("--dpi", type=int, default=500)
+    return parse_args_with_config(parser, script_file=__file__)
 
-    # we need to convert to RGB to have appropriate number of channels (specifically, 3 for RGB)
-    img = Image.open(filepath).convert('RGB')
-    vec = img2vec.get_vec(img, tensor=False)
-    img_vectors.append(vec)
 
-# we next compute T-SNE dimensionality reduction
-embedded = TSNE(n_components=2, perplexity=20, init='random', random_state=10).fit_transform(img_vectors)
+def main() -> None:
+    args = parse_args()
 
-# plots T-SNE embeddings as a scatter plot (for reference)
-plt.clf()
-plt.scatter(embedded[:,0], embedded[:,1], marker='.', color='blue')
-plt.savefig("tests/tsne_test.png")
-plt.clf()
+    from img2vec_pytorch import Img2Vec
+    import matplotlib.pyplot as plt
+    from matplotlib.image import BboxImage
+    from matplotlib.transforms import Bbox, TransformedBbox
+    from PIL import Image
+    from sklearn.manifold import TSNE
 
-# generates 2d T-SNE visualization of image embeddings
-plt.clf()
-fig = plt.figure(figsize=(25,25))
-plt.xlim([-20,20])
-plt.ylim([-20,20])
-ax = fig.add_subplot(111)
-plt.axis('off')
+    image_paths = sorted(glob.glob(args.input_glob, recursive=True))
+    if not image_paths:
+        raise FileNotFoundError(f"No images matched --input-glob: {args.input_glob}")
+    if args.perplexity <= 0 or args.perplexity >= len(image_paths):
+        raise ValueError(f"--perplexity must be positive and smaller than image count ({len(image_paths)})")
 
-# adapted from https://stackoverflow.com/questions/25329583/matplotlib-using-image-for-points-on-plot
-for i in range(0, len(img_filepaths)):
-    bb = Bbox.from_bounds(embedded[i][0],embedded[i][1],1.0,1.0)
-    bb2 = TransformedBbox(bb,ax.transData)
-    bbox_image = BboxImage(bb2, norm=None, origin=None, clip_on=False, cmap='gray')
-    im = plt.imread(img_filepaths[i])
-    bbox_image.set_data(im)
-    ax.add_artist(bbox_image)
+    image_vectors = []
+    image_model = Img2Vec(cuda=args.use_cuda, model="alexnet")
+    for image_path in image_paths:
+        with Image.open(image_path) as image:
+            image_vectors.append(image_model.get_vec(image.convert("RGB"), tensor=False))
 
-# saves figure
-plt.savefig("tests/testfig.png", dpi=500, bbox_inches='tight')
-plt.clf()
+    embedded = TSNE(
+        n_components=2,
+        perplexity=args.perplexity,
+        init="random",
+        random_state=args.random_state,
+    ).fit_transform(image_vectors)
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    plt.clf()
+    plt.scatter(embedded[:, 0], embedded[:, 1], marker=".", color="blue")
+    plt.savefig(args.output_dir / "tsne_test.png")
+    plt.clf()
+
+    figure = plt.figure(figsize=(args.figure_size, args.figure_size))
+    plt.xlim([-20, 20])
+    plt.ylim([-20, 20])
+    axis = figure.add_subplot(111)
+    plt.axis("off")
+    for index, image_path in enumerate(image_paths):
+        bbox = Bbox.from_bounds(embedded[index][0], embedded[index][1], 1.0, 1.0)
+        transformed_bbox = TransformedBbox(bbox, axis.transData)
+        bbox_image = BboxImage(transformed_bbox, norm=None, origin=None, clip_on=False, cmap="gray")
+        bbox_image.set_data(plt.imread(image_path))
+        axis.add_artist(bbox_image)
+
+    plt.savefig(args.output_dir / "testfig.png", dpi=args.dpi, bbox_inches="tight")
+    plt.close(figure)
+
+
+if __name__ == "__main__":
+    main()

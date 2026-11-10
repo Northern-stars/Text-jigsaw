@@ -1,0 +1,20 @@
+{
+  "defaults": {
+    "manifest": null,
+    "split": "test",
+    "model_family": null,
+    "model_name": null,
+    "model_revision": null,
+    "panel_count": 6,
+    "max_puzzles": null,
+    "seed": 42,
+    "max_new_tokens": 64,
+    "torch_dtype": "bfloat16",
+    "device_map": null,
+    "device": null,
+    "run_root": null,
+    "run_id": null,
+    "batch_size": 1,
+    "num_workers": 0
+  }
+}

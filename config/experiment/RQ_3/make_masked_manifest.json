@@ -1,0 +1,8 @@
+{
+  "defaults": {
+    "manifest": null,
+    "output_dir": null,
+    "output_manifest": null,
+    "fill": "black"
+  }
+}

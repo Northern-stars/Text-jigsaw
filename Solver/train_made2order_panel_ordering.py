@@ -7,6 +7,13 @@ solver entry points.
 """
 
 from __future__ import annotations
+# Resolve the project config package when this file is run directly.
+import sys as _cli_sys
+from pathlib import Path as _CliPath
+_cli_root = next((p for p in _CliPath(__file__).resolve().parents if (p / "config" / "cli.py").is_file()), None)
+if _cli_root is not None and str(_cli_root) not in _cli_sys.path:
+    _cli_sys.path.insert(0, str(_cli_root))
+from config.cli import parse_args_with_config, save_startup_config
 
 import argparse
 import json
@@ -58,7 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-every", type=int, default=25)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=0)
-    return parser.parse_args()
+    return parse_args_with_config(parser, script_file=__file__)
 
 
 def move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
@@ -229,6 +236,7 @@ def save_checkpoint(
         },
         path,
     )
+    save_startup_config(args, path.parent)
 
 
 def save_metrics_json(path: Path, metrics: dict[str, float]) -> None:

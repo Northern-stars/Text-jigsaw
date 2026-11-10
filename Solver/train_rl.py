@@ -1,6 +1,13 @@
 """Train a DQN agent for the text jigsaw environment."""
 
 from __future__ import annotations
+# Resolve the project config package when this file is run directly.
+import sys as _cli_sys
+from pathlib import Path as _CliPath
+_cli_root = next((p for p in _CliPath(__file__).resolve().parents if (p / "config" / "cli.py").is_file()), None)
+if _cli_root is not None and str(_cli_root) not in _cli_sys.path:
+    _cli_sys.path.insert(0, str(_cli_root))
+from config.cli import parse_args_with_config, save_startup_config
 
 import argparse
 import json
@@ -63,7 +70,7 @@ def parse_args() -> argparse.Namespace:
         choices=("ef", "modulator", "central", "attention", "dualstem_ef", "dualstem_modulator"),
     )
     parser.add_argument("--grad-clip-norm", type=float, default=1.0)
-    return parser.parse_args()
+    return parse_args_with_config(parser, script_file=__file__)
 
 
 def main() -> None:
@@ -276,6 +283,7 @@ def _save_checkpoint(
         }
     )
     torch.save(state, checkpoint_path)
+    save_startup_config(args, checkpoint_path.parent)
 
 
 if __name__ == "__main__":

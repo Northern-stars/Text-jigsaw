@@ -1,0 +1,9 @@
+{
+  "defaults": {
+    "checkpoint": null,
+    "dataset_dir": null,
+    "panel_count": 6,
+    "seed": 0,
+    "device": null
+  }
+}

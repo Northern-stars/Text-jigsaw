@@ -1,6 +1,13 @@
 """Run the budget-matched RQ2 style-balance LoRA experiment."""
 
 from __future__ import annotations
+# Resolve the project config package when this file is run directly.
+import sys as _cli_sys
+from pathlib import Path as _CliPath
+_cli_root = next((p for p in _CliPath(__file__).resolve().parents if (p / "config" / "cli.py").is_file()), None)
+if _cli_root is not None and str(_cli_root) not in _cli_sys.path:
+    _cli_sys.path.insert(0, str(_cli_root))
+from config.cli import parse_args_with_config, save_startup_config
 
 import argparse
 import hashlib
@@ -60,7 +67,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--resume", type=Path, default=None)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    return parser.parse_args()
+    return parse_args_with_config(parser, script_file=__file__)
 
 
 def _validate_work_splits(rows: list[dict[str, Any]]) -> None:
@@ -234,6 +241,7 @@ def main() -> None:
     run_id = args.run_id or f"{args.condition}_seed{args.seed}"
     run_dir = args.run_root / run_id
     logger = ExperimentLogger(run_dir, config, resume=args.resume is not None)
+    save_startup_config(args, run_dir / "checkpoints")
     device = torch.device(args.device)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=collate_panel_ordering_batch)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=collate_panel_ordering_batch)

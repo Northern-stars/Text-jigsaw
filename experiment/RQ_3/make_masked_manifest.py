@@ -6,6 +6,13 @@ self-contained, so later evaluation does not depend on mutable source images.
 """
 
 from __future__ import annotations
+# Resolve the project config package when this file is run directly.
+import sys as _cli_sys
+from pathlib import Path as _CliPath
+_cli_root = next((p for p in _CliPath(__file__).resolve().parents if (p / "config" / "cli.py").is_file()), None)
+if _cli_root is not None and str(_cli_root) not in _cli_sys.path:
+    _cli_sys.path.insert(0, str(_cli_root))
+from config.cli import parse_args_with_config
 
 import argparse
 import hashlib
@@ -22,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--output-manifest", type=Path, default=None)
     parser.add_argument("--fill", default="black", help="PIL fill colour for text masks")
-    return parser.parse_args()
+    return parse_args_with_config(parser, script_file=__file__)
 
 
 def resolve_path(raw: str, source_dir: Path) -> Path:

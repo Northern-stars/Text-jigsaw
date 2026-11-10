@@ -1,0 +1,15 @@
+{
+  "defaults": {
+    "raw_dir": "Data/comix/raw",
+    "max_pages": null,
+    "dataset_name": "emanuelevivoli/comix-v0_1-pages",
+    "split": "train",
+    "streaming": true,
+    "trust_remote_code": false,
+    "download_timeout": 30.0,
+    "download_retries": 3,
+    "retry_sleep": 2.0,
+    "overwrite": false,
+    "skip_network_errors": true
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "defaults": {
+    "visual_manifest": null,
+    "text_manifest": null,
+    "multimodal_manifest": null,
+    "split": "test"
+  }
+}

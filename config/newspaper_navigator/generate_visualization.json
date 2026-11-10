@@ -1,0 +1,11 @@
+{
+  "defaults": {
+    "input_glob": "../chronam-get-images/predicted/**/*.jpg",
+    "output_dir": "tests",
+    "use_cuda": false,
+    "perplexity": 20.0,
+    "random_state": 10,
+    "figure_size": 25.0,
+    "dpi": 500
+  }
+}

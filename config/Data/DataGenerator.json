@@ -1,0 +1,12 @@
+{
+  "defaults": {
+    "txt_dir": null,
+    "font_dir": null,
+    "segment_chars": null,
+    "sample_num": null,
+    "image_size": "576",
+    "output_dir": null,
+    "grid_size": 3,
+    "margin": 1
+  }
+}

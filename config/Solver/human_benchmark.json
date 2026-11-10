@@ -1,0 +1,12 @@
+{
+  "defaults": {
+    "dataset_dir": null,
+    "split": "test",
+    "num_questions": 20,
+    "image_width": 224,
+    "image_height": 224,
+    "columns": 4,
+    "seed": null,
+    "output_dir": null
+  }
+}

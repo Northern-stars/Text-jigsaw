@@ -1,0 +1,13 @@
+{
+  "defaults": {
+    "manifest": [],
+    "page": [],
+    "input_dir": null,
+    "output_dir": "ocr_dataset",
+    "limit": null,
+    "workers": 4,
+    "timeout": 60,
+    "retries": 2,
+    "overwrite": false
+  }
+}

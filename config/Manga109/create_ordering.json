@@ -1,0 +1,29 @@
+{
+  "defaults": {
+    "manga109_dir": "Data/Manga109",
+    "output_dir": "Data/Manga109/ordering_output",
+    "panel_count": 6,
+    "stride": 1,
+    "puzzle_num": 200,
+    "train_puzzles": 0,
+    "val_puzzles": 0,
+    "test_puzzles": 0,
+    "target_width": 224,
+    "target_height": 224,
+    "min_frames": 3,
+    "min_text_overlap": 0.3,
+    "image_format": "jpg",
+    "rtl": true,
+    "books": null,
+    "seed": 0,
+    "translation_engine": "none",
+    "translation_model": "",
+    "translation_device": "cpu",
+    "translation_dtype": "bfloat16",
+    "translation_cache": null,
+    "translation_batch_size": 32,
+    "translation_local_files_only": false,
+    "translation_model_dir": null,
+    "translation_compute_type": "default"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "defaults": {
+    "dataset_dir": null,
+    "epoch": 70,
+    "epochs": null,
+    "test_per_epoch": 10,
+    "batch_size": 64,
+    "grad_accum_steps": 8,
+    "lr": 0.001,
+    "momentum": 0.9,
+    "weight_decay": 0.0005,
+    "num_workers": 0,
+    "panel_count": null,
+    "image_width": 224,
+    "image_height": 224,
+    "max_permutations": 1000,
+    "permutation_seed": 0,
+    "feature_dim": 256,
+    "hidden_dim": 1024,
+    "use_layout": false,
+    "dropout": 0.5,
+    "grad_clip_norm": 0.0,
+    "save_dir": "Solver/checkpoints_mangazero_jigsaw",
+    "load": null,
+    "save_every": 10,
+    "seed": 0,
+    "device": null
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "defaults": {
+    "dataset_dir": null,
+    "panel_count": null,
+    "checkpoint": null,
+    "split": null,
+    "batch_size": null,
+    "num_workers": null,
+    "output_json": null,
+    "device": null
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "defaults": {
+    "panels_dir": "third_party/comics/data/raw_panel_images",
+    "ocr_csv": "third_party/comics/data/COMICS_ocr_file.csv",
+    "ad_pages": "third_party/comics/data/predadpages.txt",
+    "output_dir": "third_party/comics/panel_ordering_dataset",
+    "panel_count": 6,
+    "stride": 3,
+    "shuffle_per_window": 1,
+    "puzzle_num": 500,
+    "train_puzzles": 0,
+    "val_puzzles": 0,
+    "test_puzzles": 0,
+    "target_width": 224,
+    "target_height": 224,
+    "image_format": "jpg",
+    "seed": 0
+  }
+}

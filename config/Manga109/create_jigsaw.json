@@ -1,0 +1,16 @@
+{
+  "defaults": {
+    "manga109_dir": "Data/Manga109",
+    "output_dir": "Data/Manga109/jigsaw_output",
+    "rows": 3,
+    "cols": 3,
+    "piece_resolution": 384,
+    "max_pages": null,
+    "min_texts": 3,
+    "min_text_overlap": 0.3,
+    "image_format": "jpg",
+    "books": null,
+    "seed": 0,
+    "overwrite": false
+  }
+}

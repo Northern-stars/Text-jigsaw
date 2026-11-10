@@ -1,0 +1,8 @@
+{
+  "defaults": {
+    "raw_dirs": null,
+    "source": "auto",
+    "pattern": "*.xml",
+    "min_frames": 3
+  }
+}

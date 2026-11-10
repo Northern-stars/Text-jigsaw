@@ -1,0 +1,14 @@
+{
+  "defaults": {
+    "dataset_dir": "ocr_dataset",
+    "output_dir": "output",
+    "rows": 3,
+    "cols": 3,
+    "limit": null,
+    "max_images": null,
+    "image_format": "jpg",
+    "piece_resolution": 384,
+    "seed": 0,
+    "min_char_overlap": 0.5
+  }
+}

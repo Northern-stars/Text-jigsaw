@@ -1,0 +1,10 @@
+{
+  "defaults": {
+    "dataset_dir": null,
+    "output": "Solver/visualizations/random_solved_sample.jpg",
+    "seed": null,
+    "sample_index": null,
+    "draw_grid": false,
+    "show": false
+  }
+}

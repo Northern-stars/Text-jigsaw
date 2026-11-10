@@ -1,0 +1,33 @@
+{
+  "defaults": {
+    "dataset_dir": null,
+    "base_checkpoint": null,
+    "panel_count": null,
+    "save_dir": "Solver/checkpoints_qwen_vl_vector_experts",
+    "num_experts": 4,
+    "latent_dim": 64,
+    "generated_lora_rank": 4,
+    "generated_lora_last_n_layers": 2,
+    "generated_lora_target_modules": "q_proj,v_proj",
+    "feature_mode": "independent",
+    "feature_hidden_dim": 128,
+    "feature_init_checkpoint": null,
+    "feature_fit_steps": 500,
+    "feature_fit_lr": 0.001,
+    "mapping_seed": 0,
+    "epochs": 3,
+    "batch_size": 1,
+    "grad_accum_steps": 8,
+    "lr_expert": 0.01,
+    "lr_feature_mapper": 0.0001,
+    "weight_decay": 0.0,
+    "grad_clip_norm": 1.0,
+    "num_workers": 0,
+    "image_width": 224,
+    "image_height": 224,
+    "seed": 0,
+    "load": null,
+    "save_every": 1,
+    "device": null
+  }
+}
