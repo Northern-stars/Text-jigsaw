@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import random
 import sys
+import textwrap
 from pathlib import Path
 from typing import Sequence
 
@@ -33,6 +34,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--image-width", type=int, default=224)
     parser.add_argument("--image-height", type=int, default=224)
     parser.add_argument("--columns", type=int, default=4)
+    parser.add_argument(
+        "--panel-text-mode",
+        choices=("auto", "translation", "description", "none"),
+        default="auto",
+        help="Show translated dialogue, a panel description, the first available text, or no text.",
+    )
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument(
         "--output-dir",
@@ -49,6 +56,7 @@ def make_puzzle_image(
     *,
     columns: int = 4,
     padding: int = 12,
+    panel_texts: Sequence[str] | None = None,
 ) -> Image.Image:
     """Create a numbered panel sheet in the order shown to the participant."""
     if columns <= 0:
@@ -61,14 +69,15 @@ def make_puzzle_image(
         first = first.detach().cpu().numpy()
     tile_height, tile_width = int(first.shape[-2]), int(first.shape[-1])
     rows = (len(displayed_indices) + columns - 1) // columns
+    text_height = 82 if panel_texts is not None else 0
     canvas = Image.new(
         "RGB",
         (columns * tile_width + (columns + 1) * padding,
-         rows * (tile_height + 30) + (rows + 1) * padding),
+         rows * (tile_height + 30 + text_height) + (rows + 1) * padding),
         "#e9e9e9",
     )
     draw = ImageDraw.Draw(canvas)
-    font = ImageFont.load_default()
+    font = load_panel_font()
 
     for position, panel_index in enumerate(displayed_indices):
         panel = panel_images[panel_index]
@@ -83,10 +92,117 @@ def make_puzzle_image(
 
         row, column = divmod(position, columns)
         left = padding + column * (tile_width + padding)
-        top = padding + row * (tile_height + 30 + padding)
+        top = padding + row * (tile_height + 30 + text_height + padding)
         draw.text((left, top), f"Panel {position + 1}", fill="black", font=font)
         canvas.paste(panel_image, (left, top + 20))
+        if panel_texts is not None:
+            text = panel_texts[panel_index] if panel_index < len(panel_texts) else ""
+            draw_panel_text(draw, left, top + 22 + tile_height, tile_width, text_height, text, font)
     return canvas
+
+
+def panel_display_text(panel: dict, mode: str = "auto") -> str:
+    """Select translated dialogue or descriptive text from a panel record."""
+    if mode == "none":
+        return ""
+    translated = first_panel_text(panel, (
+        "translated_text", "dialog_text_translated", "translated_dialog_text", "translation"
+    ))
+    description = first_panel_text(panel, (
+        "panel_description", "description", "image_description", "alt_text", "blip3_caption"
+    ))
+    caption = first_panel_text(panel, ("caption",))
+    dialogue = first_panel_text(panel, ("dialog_text", "dialog_texts"))
+
+    if mode == "translation":
+        value = translated or dialogue
+        label = "Translation" if translated else "Dialogue"
+    elif mode == "description":
+        value = description or caption
+        label = "Description"
+    else:
+        value = translated or description or caption or dialogue
+        label = (
+            "Translation" if translated else
+            "Description" if description or caption else
+            "Dialogue"
+        )
+    return f"{label}: {value}" if value else ""
+
+
+def first_panel_text(panel: dict, keys: Sequence[str]) -> str:
+    for key in keys:
+        value = panel.get(key)
+        if isinstance(value, (list, tuple)):
+            value = " ".join(str(item) for item in value if item)
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def load_panel_font():
+    for font_path in (
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ):
+        try:
+            return ImageFont.truetype(font_path, 13)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def draw_panel_text(
+    draw: ImageDraw.ImageDraw,
+    left: int,
+    top: int,
+    width: int,
+    height: int,
+    text: str,
+    font: ImageFont.ImageFont,
+) -> None:
+    if not text:
+        return
+    available = max(1, width - 8)
+    lines = wrap_to_pixel_width(text, font, available, draw)
+    line_height = max(13, draw.textbbox((0, 0), "Ag", font=font)[3] + 2)
+    max_lines = max(1, height // line_height)
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] = (lines[-1][:-1] + "…") if lines[-1] else "…"
+    draw.multiline_text(
+        (left + 4, top + 4), "\n".join(lines), fill="#202020", font=font, spacing=1
+    )
+
+
+def wrap_to_pixel_width(
+    text: str,
+    font: ImageFont.ImageFont,
+    max_width: int,
+    draw: ImageDraw.ImageDraw,
+) -> list[str]:
+    lines: list[str] = []
+    current = ""
+    for word in text.split():
+        candidate = f"{current} {word}".strip()
+        if current and draw.textbbox((0, 0), candidate, font=font)[2] > max_width:
+            lines.append(current)
+            current = ""
+        if draw.textbbox((0, 0), word, font=font)[2] <= max_width:
+            current = f"{current} {word}".strip()
+            continue
+        for character in word:
+            candidate = current + character
+            if current and draw.textbbox((0, 0), candidate, font=font)[2] > max_width:
+                lines.append(current)
+                current = character
+            else:
+                current = candidate
+    if current:
+        lines.append(current)
+    return lines
 
 
 def parse_answer(answer: str, panel_count: int) -> list[int] | None:
@@ -146,8 +262,16 @@ def run_benchmark(args: argparse.Namespace) -> tuple[int, int]:
         displayed_indices = list(range(panel_count))
         rng.shuffle(displayed_indices)
         truth = correct_display_order(sample["target_order"].tolist(), displayed_indices)
+        panel_texts = [
+            panel_display_text(panel, args.panel_text_mode)
+            for panel in sample["panels"]
+        ]
+        display_texts = panel_texts if args.panel_text_mode != "none" else None
         puzzle_image = make_puzzle_image(
-            sample["panel_images"], displayed_indices, columns=args.columns
+            sample["panel_images"],
+            displayed_indices,
+            columns=args.columns,
+            panel_texts=display_texts,
         )
 
         image_path = None

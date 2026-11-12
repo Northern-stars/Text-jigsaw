@@ -1,0 +1,20 @@
+{
+  "defaults": {
+    "raw_dir": "Data/strip/raw",
+    "output_dir": "Data/strip/ordering",
+    "panel_count": 4,
+    "stride": 1,
+    "shuffle_per_window": 1,
+    "puzzle_num": 500,
+    "train_puzzles": 0,
+    "val_puzzles": 0,
+    "test_puzzles": 0,
+    "grid_rows": 0,
+    "grid_cols": 0,
+    "reading_order": "ltr",
+    "target_width": 224,
+    "target_height": 224,
+    "image_format": "jpg",
+    "seed": 0
+  }
+}

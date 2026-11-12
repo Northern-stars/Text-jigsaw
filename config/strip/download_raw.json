@@ -1,0 +1,14 @@
+{
+  "defaults": {
+    "dataset_name": "bghira/comicstrips-gpt4o-blip3",
+    "split": "train",
+    "raw_dir": "Data/strip/raw",
+    "max_strips": null,
+    "image_column": "auto",
+    "streaming": true,
+    "trust_remote_code": false,
+    "overwrite": false,
+    "download_retries": 3,
+    "retry_sleep": 2.0
+  }
+}

@@ -144,6 +144,7 @@ class CTranslate2SugoiTranslator:
     ) -> None:
         try:
             import ctranslate2
+            import sentencepiece as spm
         except ImportError as exc:
             raise ImportError(
                 "ctranslate2 is required for the ct2 Sugoi translator. "
@@ -166,6 +167,47 @@ class CTranslate2SugoiTranslator:
                 "Use --translation-engine sugoi-hf for Hugging Face causal LM models."
             )
 
+        source_tokenizer_path = find_sentencepiece_model(
+            self.source,
+            (
+                "spm.ja.nopretok.model",
+                "spm.ja.model",
+                "source.spm",
+                "source.model",
+                "sentencepiece.bpe.model",
+                "spm.model",
+                "spiece.model",
+                "tokenizer.model",
+            ),
+        )
+        target_tokenizer_path = find_sentencepiece_model(
+            self.source,
+            (
+                "spm.en.nopretok.model",
+                "spm.en.model",
+                "target.spm",
+                "target.model",
+                "sentencepiece.bpe.model",
+                "spm.model",
+                "spiece.model",
+                "tokenizer.model",
+            ),
+        )
+        if source_tokenizer_path is None:
+            raise RuntimeError(
+                f"No SentencePiece source tokenizer found in {self.source}. "
+                "Expected spm.ja.nopretok.model, source.spm/source.model, or a shared tokenizer.model."
+            )
+        if target_tokenizer_path is None:
+            target_tokenizer_path = source_tokenizer_path
+
+        self.source_tokenizer = spm.SentencePieceProcessor(model_file=str(source_tokenizer_path))
+        self.target_tokenizer = (
+            self.source_tokenizer
+            if target_tokenizer_path == source_tokenizer_path
+            else spm.SentencePieceProcessor(model_file=str(target_tokenizer_path))
+        )
+
         self.device = device
         if device == "cuda" and ctranslate2.get_cuda_device_count() == 0:
             print("WARN: no CUDA device visible to ctranslate2; falling back to CPU")
@@ -181,16 +223,42 @@ class CTranslate2SugoiTranslator:
         )
 
     def translate_batch(self, texts: list[str]) -> list[str]:
+        tokenized = [self.source_tokenizer.encode(text, out_type=str) for text in texts]
         results = self.translator.translate_batch(
-            texts,
+            tokenized,
             beam_size=4,
             max_batch_size=self.batch_size,
             max_decoding_length=256,
         )
         outputs: list[str] = []
         for result in results:
-            outputs.append(result.hypotheses[0].strip() if result.hypotheses else "")
+            hypotheses = getattr(result, "hypotheses", None)
+            if not hypotheses:
+                outputs.append("")
+                continue
+            hypothesis = hypotheses[0]
+            if isinstance(hypothesis, str):
+                outputs.append(hypothesis.strip())
+            else:
+                outputs.append(self.target_tokenizer.decode(hypothesis).strip())
         return outputs
+
+
+def find_sentencepiece_model(model_dir: Path, names: tuple[str, ...]) -> Path | None:
+    """Find a SentencePiece model shipped beside a CTranslate2 model."""
+    # Sugoi stores its tokenizers below ``spm/``; other CT2 exports put them
+    # at the model root. Search recursively while preserving the caller's
+    # filename priority.
+    files_by_name = {
+        path.name: path
+        for path in model_dir.rglob("*")
+        if path.is_file()
+    }
+    for name in names:
+        candidate = files_by_name.get(name)
+        if candidate is not None:
+            return candidate
+    return None
 
 
 class HFCausalSugoiTranslator:
