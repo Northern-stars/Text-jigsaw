@@ -59,7 +59,9 @@ from Mangazero.build_dataset import (
     recognize_dialog_text,
     write_puzzle_directory,
 )
-from Manga109.reading_order_utils import sort_prepared_panels_reading_order
+from Manga109.reading_order_utils import (
+    READING_ORDER_VERSION, ReadingOrderError, sort_prepared_panels_reading_order,
+)
 
 try:
     from tqdm import tqdm
@@ -140,6 +142,8 @@ def parse_args(mode: str = "all") -> argparse.Namespace:
         )
 
     if include_build:
+        parser.add_argument("--page-layout", choices=("single", "spread"), default="single",
+                            help="Explicit physical layout; spread uses the image midpoint as page boundary.")
         # Ordering build
         parser.add_argument(
             "--output-dir",
@@ -246,13 +250,14 @@ def parse_args(mode: str = "all") -> argparse.Namespace:
             dest="sort_panels_reading_order",
             help="Keep the source detection order instead of geometric reading order.",
         )
-        parser.add_argument(
+        direction = parser.add_mutually_exclusive_group()
+        direction.add_argument(
             "--reading-order-rtl",
             action="store_true",
-            default=True,
+            default=False,
             help="Within a row, order panels right-to-left (manga convention).",
         )
-        parser.add_argument(
+        direction.add_argument(
             "--reading-order-ltr",
             action="store_false",
             dest="reading_order_rtl",
@@ -775,6 +780,7 @@ def build_ordering_from_raw(args: argparse.Namespace) -> None:
     split_manifests = SplitManifests(output_dir)
     ocr = None if args.disable_ocr else build_comix_ocr_engine(args)
     ocr_stats = {"attempted": 0, "recognized": 0, "empty": 0, "failed": 0}
+    skipped_reading_order_pages = 0
 
     try:
         raw_samples = load_raw_samples_from_dir(raw_dir, max_samples=args.max_pages)
@@ -801,11 +807,17 @@ def build_ordering_from_raw(args: argparse.Namespace) -> None:
             page_groups = group_by_page(panels)
             for page_key, page_panels in page_groups.items():
                 page_panels.sort(key=lambda p: p.record.panel_index_in_page)
-                if getattr(args, "sort_panels_reading_order", False):
+                try:
                     page_panels = sort_prepared_panels_reading_order(
                         page_panels,
-                        rtl=getattr(args, "reading_order_rtl", True),
+                        rtl=args.reading_order_rtl,
+                        page_split_x=(page_panels[0].record.page_size[0] / 2
+                                      if args.page_layout == "spread" else None),
+                        sort_panels=args.sort_panels_reading_order,
                     )
+                except ReadingOrderError:
+                    skipped_reading_order_pages += 1
+                    continue
                 full_key = f"{group_key}/{page_key}"
                 grouped_panels.setdefault(full_key, []).extend(page_panels)
 
@@ -838,7 +850,8 @@ def build_ordering_from_raw(args: argparse.Namespace) -> None:
             if split_name is None:
                 break
 
-            page_panels.sort(key=lambda p: p.record.panel_index_in_page)
+            # Preserve the geometric order established above. Re-sorting by
+            # the source detection index here would undo the reading order.
             group_name, page_key = _split_group_key(group_key)
             for start in range(0, len(page_panels), args.stride):
                 if budget.done:
@@ -891,6 +904,13 @@ def build_ordering_from_raw(args: argparse.Namespace) -> None:
         "target_panel_size": [args.target_width, args.target_height],
         "group_count": len(grouped_panels),
         "puzzle_count": puzzle_count,
+        "skipped_reading_order_pages": skipped_reading_order_pages,
+        "reading_order_version": READING_ORDER_VERSION,
+        "reading_direction": "rtl" if args.reading_order_rtl else "ltr",
+        "page_layout": args.page_layout,
+        "window_policy": "continuous_source_image",
+        "build_arguments": {key: str(value) if isinstance(value, Path) else value
+                            for key, value in vars(args).items()},
         "split_counts": budget.totals,
         "split_target_counts": {
             "train": train_q,

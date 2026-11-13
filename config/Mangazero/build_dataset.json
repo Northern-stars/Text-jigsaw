@@ -34,6 +34,7 @@
     "seed": 0,
     "overwrite": false,
     "sort_panels_reading_order": true,
-    "reading_order_rtl": true
+    "reading_order_rtl": true,
+    "page_layout": "spread"
   }
 }

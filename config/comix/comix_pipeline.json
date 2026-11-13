@@ -41,8 +41,9 @@
     "debug_ocr": false,
     "skip_ocr_errors": true,
     "sort_panels_reading_order": true,
-    "reading_order_rtl": true,
+    "reading_order_rtl": false,
     "stream_only": false,
-    "build_only": false
+    "build_only": false,
+    "page_layout": "single"
   }
 }

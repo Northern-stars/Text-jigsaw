@@ -24,6 +24,7 @@
     "translation_batch_size": 32,
     "translation_local_files_only": false,
     "translation_model_dir": null,
-    "translation_compute_type": "default"
+    "translation_compute_type": "default",
+    "page_layout": "spread"
   }
 }

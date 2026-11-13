@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import sys
 import textwrap
+import uuid
 from pathlib import Path
 from typing import Sequence
 
@@ -47,6 +49,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Optional directory where displayed puzzle images are saved.",
     )
+    parser.add_argument("--results-path", type=Path, default=None,
+                        help="Optional JSONL file for reproducible question and answer records.")
     return parse_args_with_config(parser, argv, script_file=__file__)
 
 
@@ -225,8 +229,11 @@ def correct_display_order(target_order: Sequence[int], displayed_indices: Sequen
     """Return 1-based displayed panel IDs in canonical reading order."""
     if len(target_order) != len(displayed_indices):
         raise ValueError("target_order and displayed_indices must have equal length")
-    input_positions_in_reading_order = sorted(range(len(target_order)), key=lambda index: target_order[index])
-    return [displayed_indices.index(index) + 1 for index in input_positions_in_reading_order]
+    expected = set(range(len(target_order)))
+    if set(target_order) != expected or set(displayed_indices) != expected:
+        raise ValueError("orders must be permutations of input panel indices")
+    input_to_display = {index: position + 1 for position, index in enumerate(displayed_indices)}
+    return [input_to_display[index] for index in target_order]
 
 
 def run_benchmark(args: argparse.Namespace) -> tuple[int, int]:
@@ -248,6 +255,11 @@ def run_benchmark(args: argparse.Namespace) -> tuple[int, int]:
 
     if args.output_dir is not None:
         args.output_dir.mkdir(parents=True, exist_ok=True)
+    results_handle = None
+    benchmark_run_id = str(uuid.uuid4())
+    if args.results_path is not None:
+        args.results_path.parent.mkdir(parents=True, exist_ok=True)
+        results_handle = args.results_path.open("a", encoding="utf-8")
 
     print(f"Human benchmark: {len(dataset)} puzzles available in split '{args.split}'.")
     print("Enter panel IDs from earliest to latest reading order; use q to finish.\n")
@@ -301,8 +313,30 @@ def run_benchmark(args: argparse.Namespace) -> tuple[int, int]:
             print("Correct.")
         else:
             print(f"Incorrect. Correct order: {' '.join(map(str, truth))}")
+        if results_handle is not None:
+            results_handle.write(json.dumps({
+                "benchmark_run_id": benchmark_run_id,
+                "question_number": question_number,
+                "dataset_dir": str(args.dataset_dir.resolve()),
+                "split": args.split,
+                "seed": args.seed,
+                "sequence_id": sample["sequence_id"],
+                "reading_order_version": sample["panels"][0].get("reading_order_version"),
+                "reading_order_method": sample["panels"][0].get("reading_order_method"),
+                "reading_direction": sample.get("reading_direction"),
+                "displayed_input_indices": displayed_indices,
+                "reference_display_order": truth,
+                "answer": answer,
+                "correct": answer == truth,
+                "panel_text_mode": args.panel_text_mode,
+                "image_size": [args.image_width, args.image_height],
+                "puzzle_image_path": str(image_path.resolve()) if image_path is not None else None,
+            }, ensure_ascii=False) + "\n")
+            results_handle.flush()
         print(f"Score: {correct_count}/{answered_count} ({100 * correct_count / answered_count:.1f}%)\n")
 
+    if results_handle is not None:
+        results_handle.close()
     accuracy = correct_count / answered_count if answered_count else 0.0
     print(f"Final score: {correct_count}/{answered_count}; accuracy={accuracy:.1%}")
     return correct_count, answered_count

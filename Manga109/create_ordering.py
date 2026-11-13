@@ -54,7 +54,10 @@ except ImportError:
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from Manga109.reading_order_utils import sort_bboxes_reading_order
+from Manga109.reading_order_utils import (
+    READING_ORDER_VERSION, ReadingOrderError, describe_panel_sequence,
+    sequence_provenance, sort_bboxes_reading_order,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -135,11 +138,11 @@ def sort_frames_reading_order(
     frames: list[dict[str, Any]],
     page_height: int,
     rtl: bool = True,
+    page_split_x: float | None = None,
 ) -> list[dict[str, Any]]:
     """Sort frame bboxes in manga reading order (top-to-bottom, right-to-left).
 
-    Uses vertical band detection to group frames into rows, then sorts
-    within each row from right to left.
+    Physical pages are ordered before recursive row/column gutter splitting.
     """
     class _FrameWithBbox:
         __slots__ = ("frame", "bbox")
@@ -154,6 +157,7 @@ def sort_frames_reading_order(
         page_height=page_height,
         rtl=rtl,
         bbox_key="bbox",
+        page_split_x=page_split_x,
     )
     return [item.frame for item in sorted_wrapped]
 
@@ -265,6 +269,7 @@ def create_manga109_ordering(
     translation_local_files_only: bool = False,
     translation_model_dir: Path | None = None,
     translation_compute_type: str = "default",
+    page_layout: str = "spread",
 ) -> dict[str, Any]:
     """Create panel-ordering puzzle samples from Manga109.
 
@@ -273,6 +278,10 @@ def create_manga109_ordering(
     """
     if stride <= 0:
         raise ValueError("stride must be positive")
+    if panel_count <= 0 or target_width <= 0 or target_height <= 0:
+        raise ValueError("panel count and target image dimensions must be positive")
+    if page_layout not in {"single", "spread"}:
+        raise ValueError("page_layout must be single or spread")
     annotations_dir = manga109_dir / "annotations"
     images_dir = manga109_dir / "images"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -331,6 +340,7 @@ def create_manga109_ordering(
     # split; when the active split quota is exhausted we move to the next one.
     puzzle_count = 0
     skipped_windows = 0
+    skipped_reading_order_pages = 0
 
     page_iter = page_candidates
     if tqdm is not None:
@@ -349,12 +359,31 @@ def create_manga109_ordering(
         page_h = int(page_info["height"])
         page_idx = int(page_info["index"])
 
+        page_id = f"{book_name}_p{page_idx:04d}"
+        page_split_x = page_w / 2 if page_layout == "spread" else None
+        for source_index, frame in enumerate(frames):
+            frame["source_panel_index"] = source_index
+            frame["bbox"] = [frame[k] for k in ("xmin", "ymin", "xmax", "ymax")]
+
+        # Establish the full source-image order before translating or windowing.
+        try:
+            ordered_frames = sort_frames_reading_order(
+                frames, page_h, rtl=rtl, page_split_x=page_split_x,
+            )
+        except ReadingOrderError:
+            skipped_reading_order_pages += 1
+            continue
+        metadata = describe_panel_sequence(
+            ordered_frames, page_id=page_id,
+            source_image_id=str(image_path.relative_to(manga109_dir)),
+            page_split_x=page_split_x, rtl=rtl,
+        )
+        for frame, fields in zip(ordered_frames, metadata):
+            frame["reading_order_metadata"] = fields
+
         # Assign text to frames
         source_map = assign_texts_to_frames(texts, frames, min_text_overlap)
         text_map = translate_text_map(source_map, translator) if translator is not None else source_map
-
-        # Sort frames in reading order
-        ordered_frames = sort_frames_reading_order(frames, page_h, rtl=rtl)
 
         # Read the page image once
         with Image.open(image_path) as full_img:
@@ -399,14 +428,19 @@ def create_manga109_ordering(
                 dialog_text = text_map.get(frame["id"], source_text)
 
                 shuffled_panels.append({
-                    "panel_id": f"p{page_idx:04d}_f{original_idx}",
+                    "panel_id": f"{page_id}_frame_{frame['id']}",
+                    "source_panel_id": f"{page_id}_frame_{frame['id']}",
+                    "source_panel_index": frame["source_panel_index"],
+                    "input_index": input_idx,
+                    "original_window_index": original_idx,
                     "manga_id": book_name,
                     "chapter_id": "default",
                     "source_image_path": str(image_path.relative_to(manga109_dir)),
                     "page_id": f"{book_name}_p{page_idx:04d}",
                     "page_index": page_idx,
-                    "panel_index_in_page": original_idx,
-                    "global_order": original_idx,
+                    "panel_index_in_page": frame["source_panel_index"],
+                    "global_order": page_idx * 10000 + frame["reading_order_metadata"]["reading_rank_in_source"],
+                    **frame["reading_order_metadata"],
                     "bbox": [x1, y1, x2, y2],
                     "page_size": [page_w, page_h],
                     "padded_path": f"{puzzle_count:06d}/panels_padded/{padded_name}",
@@ -443,6 +477,7 @@ def create_manga109_ordering(
                 "input_order": input_order,
                 "target_order": target_order,
                 "text_source": "xml_translated" if translator is not None else "xml_original",
+                **sequence_provenance(shuffled_panels),
             }
 
             with (puzzle_dir / "sample.json").open("w", encoding="utf-8") as f:
@@ -478,9 +513,22 @@ def create_manga109_ordering(
             "test": test_q,
         },
         "skipped_windows": skipped_windows,
+        "skipped_reading_order_pages": skipped_reading_order_pages,
+        "reading_order_version": READING_ORDER_VERSION,
+        "reading_direction": "rtl" if rtl else "ltr",
+        "page_layout": page_layout,
+        "window_policy": "continuous_source_image",
+        "build_arguments": {
+            "manga109_dir": str(manga109_dir), "output_dir": str(output_dir),
+            "panel_count": panel_count, "stride": stride, "puzzle_num": puzzle_num,
+            "rtl": rtl, "page_layout": page_layout, "seed": seed,
+            "target_size": [target_width, target_height],
+        },
         "pages_with_frames": len(page_candidates),
         "books_scanned": len(book_names),
     }
+    with (output_dir / "meta.json").open("w", encoding="utf-8") as handle:
+        json.dump(stats, handle, ensure_ascii=False, indent=2)
     print(
         f"Done. Puzzles: {puzzle_count}. Skipped windows: {skipped_windows}. "
         f"Pages with frames: {len(page_candidates)}."
@@ -516,8 +564,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--min-frames", type=int, default=3, help="Minimum frames on a page to include it.")
     p.add_argument("--min-text-overlap", type=float, default=0.3, help="Min overlap to assign text to a frame.")
     p.add_argument("--image-format", default="jpg", choices=("jpg", "png"))
-    p.add_argument("--rtl", action="store_true", default=True, help="Right-to-left reading order (manga).")
-    p.add_argument("--no-rtl", action="store_false", dest="rtl")
+    direction = p.add_mutually_exclusive_group()
+    direction.add_argument("--rtl", action="store_true", default=True, help="Right-to-left reading order (manga).")
+    direction.add_argument("--no-rtl", action="store_false", dest="rtl")
+    p.add_argument("--page-layout", choices=("single", "spread"), default="spread",
+                   help="Manga109 normally stores two-page spreads; use single for pre-split input.")
     p.add_argument("--books", nargs="*", help="Process only these book titles.")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument(
@@ -590,6 +641,7 @@ def main() -> None:
         image_format=args.image_format,
         min_text_overlap=args.min_text_overlap,
         rtl=args.rtl,
+        page_layout=args.page_layout,
         books=args.books,
         seed=args.seed,
         translation_engine=args.translation_engine,

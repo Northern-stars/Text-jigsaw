@@ -36,6 +36,7 @@
     "ocr_enhance_rotate": false,
     "image_format": "jpg",
     "sort_panels_reading_order": true,
-    "reading_order_rtl": true
+    "reading_order_rtl": true,
+    "page_layout": "spread"
   }
 }

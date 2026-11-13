@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import unittest
+import itertools
+import random
 
 import numpy as np
 from PIL import Image
@@ -12,9 +14,23 @@ from Solver.human_benchmark import correct_display_order, make_puzzle_image, par
 
 class HumanBenchmarkTests(unittest.TestCase):
     def test_correct_order_is_mapped_to_randomized_display_numbers(self) -> None:
-        # Input panels 0..3 have reading ranks [2, 0, 3, 1]. The display is
-        # input panel order [2, 0, 3, 1], so the answer should be 4, 3, 2, 1.
-        self.assertEqual(correct_display_order([2, 0, 3, 1], [2, 0, 3, 1]), [4, 3, 2, 1])
+        # The display already lists the input slots in target reading order.
+        self.assertEqual(correct_display_order([2, 0, 3, 1], [2, 0, 3, 1]), [1, 2, 3, 4])
+
+    def test_generated_labels_survive_all_six_panel_input_permutations(self) -> None:
+        rng = random.Random(109)
+        for input_order in itertools.permutations(range(6)):
+            target = [input_order.index(rank) for rank in range(6)]
+            display = list(range(6))
+            rng.shuffle(display)
+            answer = correct_display_order(target, display)
+            # Recover source reading ranks through the actual display slots.
+            self.assertEqual([input_order[display[i - 1]] for i in answer], list(range(6)))
+
+    def test_display_mapping_rejects_invalid_permutations(self) -> None:
+        for target, display in (([0, 0], [0, 1]), ([0, 1], [1, 1]), ([0, 1], [0])):
+            with self.assertRaises(ValueError):
+                correct_display_order(target, display)
 
     def test_answer_parser_accepts_delimiters_and_quit(self) -> None:
         self.assertEqual(parse_answer("3, 1 2", 3), [3, 1, 2])

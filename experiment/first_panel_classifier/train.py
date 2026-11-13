@@ -1,6 +1,6 @@
 """Train a Qwen-VL hidden-state classifier for the first panel of a puzzle.
 
-The target is the input-slot index whose ``target_order`` is zero. This is a
+The target is the first input-slot index in ``target_order``. This is a
 small feasibility task: the VLM provides one pooled puzzle representation and
 the classifier head predicts one of the input panel slots.
 """
@@ -28,7 +28,9 @@ from Solver.data.panel_ordering_dataset import (
     MangaZeroPanelOrderingDataset,
     collate_panel_ordering_batch,
 )
-from experiment.first_panel_classifier.model import QwenVLFirstPanelClassifier, first_panel_targets
+from experiment.first_panel_classifier.model import QwenVLFirstPanelClassifier
+from experiment.first_panel_classifier.targets import first_panel_targets
+from experiment.first_panel_classifier.targets import LABEL_DEFINITION, validate_checkpoint_label_definition
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -86,7 +88,7 @@ def main() -> None:
 
     config = {key: (str(value) if isinstance(value, Path) else value) for key, value in vars(args).items() if key != "resume"}
     config["experiment"] = "first_panel_classifier"
-    config["label_definition"] = "input_panel_index_where_target_order_equals_zero"
+    config["label_definition"] = LABEL_DEFINITION
     run_id = args.run_id or f"{args.model_name.rsplit('/', 1)[-1]}_seed{args.seed}"
     run_dir = args.run_root / run_id
     logger = ExperimentLogger(run_dir, config, resume=args.resume is not None)
@@ -121,6 +123,7 @@ def main() -> None:
     best_val = -1.0
     if args.resume is not None:
         state = ExperimentLogger.load_checkpoint(args.resume, optimizer=optimizer, map_location=device)
+        validate_checkpoint_label_definition(state.get("extra", {}))
         model.load_trainable_state_dict(state["model"])
         start_epoch = int(state["epoch"]) + 1
         global_step = int(state.get("global_step", 0))
@@ -134,14 +137,26 @@ def main() -> None:
         record = {"type": "epoch", "epoch": epoch, "global_step": global_step, "train": train_metrics, "val": val_metrics, "optimizer_steps": steps}
         logger.log_metrics(record)
         logger.log(f"epoch={epoch}/{args.epochs} train_acc={train_metrics['accuracy']:.4f} val_acc={val_metrics.get('accuracy', 0.0):.4f}")
-        extra = {"best_val": best_val, "panel_count": args.panel_count}
+        extra = {
+            "best_val": best_val,
+            "panel_count": args.panel_count,
+            "label_definition": LABEL_DEFINITION,
+        }
         if args.save_every > 0 and epoch % args.save_every == 0:
             logger.save_checkpoint(f"epoch_{epoch:04d}.pt", model_state=model.trainable_state_dict(), optimizer=optimizer, epoch=epoch, global_step=global_step, extra=extra)
         if val_metrics and val_metrics["accuracy"] > best_val:
             best_val = val_metrics["accuracy"]
-            logger.save_checkpoint("best.pt", model_state=model.trainable_state_dict(), optimizer=optimizer, epoch=epoch, global_step=global_step, extra={"best_val": best_val})
+            logger.save_checkpoint(
+                "best.pt", model_state=model.trainable_state_dict(), optimizer=optimizer,
+                epoch=epoch, global_step=global_step,
+                extra={"best_val": best_val, "label_definition": LABEL_DEFINITION},
+            )
 
-    logger.save_checkpoint("last.pt", model_state=model.trainable_state_dict(), optimizer=optimizer, epoch=args.epochs, global_step=global_step, extra={"best_val": best_val})
+    logger.save_checkpoint(
+        "last.pt", model_state=model.trainable_state_dict(), optimizer=optimizer,
+        epoch=args.epochs, global_step=global_step,
+        extra={"best_val": best_val, "label_definition": LABEL_DEFINITION},
+    )
     test_metrics = evaluate(model, test_loader, device, args) if test_loader is not None else {}
     logger.log_metrics({"type": "final_test", "test": test_metrics})
     logger.log(f"final test_acc={test_metrics.get('accuracy', 0.0):.4f}")

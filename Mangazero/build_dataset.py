@@ -18,7 +18,7 @@ import random
 import re
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
 from queue import Empty, Full
@@ -28,7 +28,10 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from Manga109.reading_order_utils import sort_prepared_panels_reading_order
+from Manga109.reading_order_utils import (
+    READING_ORDER_VERSION, ReadingOrderError, sequence_provenance,
+    sort_prepared_panels_reading_order,
+)
 
 try:
     from tqdm import tqdm
@@ -58,6 +61,7 @@ class PanelRecord:
     character_ids: list[str]
     character_bboxes: list[list[int]]
     character_types: list[int]
+    reading_order_metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def panel_id(self) -> str:
@@ -65,6 +69,7 @@ class PanelRecord:
 
     def to_json(self) -> dict[str, Any]:
         data = self.__dict__.copy()
+        data.update(data.pop("reading_order_metadata"))
         data["panel_id"] = self.panel_id
         return data
 
@@ -136,6 +141,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-format", default="jpg", choices=("jpg", "png"))
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--page-layout", choices=("single", "spread"), default="spread",
+                        help="MangaZero sources contain two stitched physical pages.")
     parser.add_argument(
         "--sort-panels-reading-order",
         action="store_true",
@@ -148,13 +155,14 @@ def parse_args() -> argparse.Namespace:
         dest="sort_panels_reading_order",
         help="Keep the source detection order instead of geometric reading order.",
     )
-    parser.add_argument(
+    direction = parser.add_mutually_exclusive_group()
+    direction.add_argument(
         "--reading-order-rtl",
         action="store_true",
         default=True,
         help="Within a row, order panels right-to-left (manga convention).",
     )
-    parser.add_argument(
+    direction.add_argument(
         "--reading-order-ltr",
         action="store_false",
         dest="reading_order_rtl",
@@ -191,6 +199,7 @@ def main() -> None:
         puzzle_count = 0
         page_group_count = 0
         panel_count_total = 0
+        skipped_reading_order_pages = 0
         for sample in dataset_iterable:
             if budget.done:
                 break
@@ -217,11 +226,17 @@ def main() -> None:
                 if split_name is None:
                     break
                 page_panels.sort(key=lambda panel: panel.record.panel_index_in_page)
-                if getattr(args, "sort_panels_reading_order", False):
+                try:
                     page_panels = sort_prepared_panels_reading_order(
                         page_panels,
-                        rtl=getattr(args, "reading_order_rtl", True),
+                        rtl=args.reading_order_rtl,
+                        page_split_x=(float(sample["meta"]["width1"])
+                                      if args.page_layout == "spread" else None),
+                        sort_panels=args.sort_panels_reading_order,
                     )
+                except ReadingOrderError:
+                    skipped_reading_order_pages += 1
+                    continue
                 for start in range(0, len(page_panels), args.stride):
                     if budget.done:
                         break
@@ -276,6 +291,13 @@ def main() -> None:
             "ocr_device": args.ocr_device if not args.disable_ocr else None,
             "group_count": page_group_count,
             "panel_count_total": panel_count_total,
+            "skipped_reading_order_pages": skipped_reading_order_pages,
+            "reading_order_version": READING_ORDER_VERSION,
+            "reading_direction": "rtl" if args.reading_order_rtl else "ltr",
+            "window_policy": "continuous_source_image",
+            "page_layout": args.page_layout,
+            "build_arguments": {key: str(value) if isinstance(value, Path) else value
+                                for key, value in vars(args).items()},
             "puzzle_count": puzzle_count,
             "split_counts": budget.totals,
             "split_target_counts": {
@@ -294,6 +316,8 @@ def main() -> None:
 
 
 def validate_args(args: argparse.Namespace) -> None:
+    if args.page_layout not in {"single", "spread"}:
+        raise ValueError("--page-layout must be single or spread")
     if args.panel_count <= 1:
         raise ValueError("--panel-count must be greater than 1")
     if args.stride <= 0:
@@ -774,6 +798,7 @@ def write_puzzle_directory(
         "input_order": input_order,
         "target_order": target_order,
         "text_source": "dialog_text",
+        **sequence_provenance(shuffled_panels),
     }
     with (puzzle_dir / "sample.json").open("w", encoding="utf-8") as handle:
         json.dump(sample, handle, ensure_ascii=False, indent=2)
