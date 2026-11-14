@@ -93,6 +93,7 @@ def main() -> None:
                     "dataset_dir": str(args.dataset_dir),
                     "split": split_name,
                     "metrics": metrics,
+                    "task": "order_remaining_given_first",
                 },
                 handle,
                 ensure_ascii=False,

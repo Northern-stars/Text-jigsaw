@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -176,7 +177,7 @@ def train_one_epoch(model: QwenVLFirstPanelClassifier, loader: DataLoader, optim
     optimizer.zero_grad(set_to_none=True)
     losses: list[float] = []
     correct = total = steps = 0
-    for batch_index, batch in enumerate(loader, start=1):
+    for batch_index, batch in enumerate(tqdm(loader), start=1):
         images = batch["panel_images"].to(device)
         targets = first_panel_targets(batch["target_order"].to(device))
         logits = model(images, dialog_texts=batch.get("dialog_texts"))

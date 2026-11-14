@@ -12,9 +12,10 @@ from typing import Optional
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from PIL import Image
 from torch import Tensor, nn
+
+from Solver.data.given_start import validate_given_start
 
 
 class MangaZeroQwenVLAutoregressiveSolver(nn.Module):
@@ -347,6 +348,7 @@ class MangaZeroQwenVLAutoregressiveSolver(nn.Module):
             memory = self.encode_panels(panel_images, dialog_texts=dialog_texts)
         if target_order is None:
             return self.greedy_decode(memory=memory)
+        validate_given_start(target_order)
         decoder_inputs = self._teacher_forcing_inputs(memory, target_order)
         causal_mask = torch.triu(
             torch.ones(decoder_inputs.size(1), decoder_inputs.size(1), device=memory.device, dtype=torch.bool),
@@ -369,9 +371,9 @@ class MangaZeroQwenVLAutoregressiveSolver(nn.Module):
     def greedy_decode(self, memory: Tensor) -> Tensor:
         """Iteratively select the next panel from the remaining candidates."""
         batch_size = memory.size(0)
-        selected = torch.empty(batch_size, 0, dtype=torch.long, device=memory.device)
+        selected = torch.zeros(batch_size, 1, dtype=torch.long, device=memory.device)
 
-        for _ in range(self.panel_count):
+        for _ in range(self.panel_count - 1):
             decoder_inputs = self._decode_inputs_from_selected(memory, selected)
             causal_mask = torch.triu(
                 torch.ones(decoder_inputs.size(1), decoder_inputs.size(1), device=memory.device, dtype=torch.bool),
@@ -520,6 +522,7 @@ def build_ordering_prompt(panel_count: int, dialog_texts: list[str] | None = Non
         f"There are {panel_count} input panels numbered {panel_ids}. "
         "Use visual continuity, reading flow, characters, dialog bubbles, and scene transitions "
         "to infer the correct chronological reading order. "
+        "Panel 0 is the known opening panel. Keep it first and order only panels 1 onward. "
         "Do not generate the order; provide an internal representation for classification."
     )
     if dialog_texts:
@@ -571,8 +574,5 @@ def tensor_to_pil(image: Tensor) -> Image.Image:
 
 
 def pointer_cross_entropy(pointer_logits: Tensor, target_order: Tensor) -> Tensor:
-    panel_count = pointer_logits.size(1)
-    return F.cross_entropy(
-        pointer_logits.reshape(-1, pointer_logits.size(-1)),
-        target_order[:, :panel_count].reshape(-1),
-    )
+    from Solver.agent.mangazero_set2seq_solver import pointer_cross_entropy as continuation_loss
+    return continuation_loss(pointer_logits, target_order)

@@ -51,7 +51,7 @@ class MangaZeroQwenVLLoRAClassifier(nn.Module):
         self.num_classes = self._num_permutations(panel_count, max_permutation_classes)
 
         class_orders = torch.tensor(
-            list(itertools.permutations(range(panel_count))),
+            [(0,) + tail for tail in itertools.permutations(range(1, panel_count))],
             dtype=torch.long,
         )
         self.register_buffer("class_orders", class_orders, persistent=True)
@@ -333,7 +333,7 @@ class MangaZeroQwenVLLoRAClassifier(nn.Module):
     @staticmethod
     def _num_permutations(panel_count: int, max_permutation_classes: int) -> int:
         total = 1
-        for value in range(2, panel_count + 1):
+        for value in range(2, panel_count):
             total *= value
         if total > max_permutation_classes:
             raise ValueError(
@@ -350,6 +350,7 @@ def build_ordering_prompt(panel_count: int, dialog_texts: list[str] | None = Non
         f"There are {panel_count} input panels numbered {panel_ids}. "
         "Use visual continuity, reading flow, characters, dialog bubbles, and scene transitions "
         "to infer the correct chronological reading order. "
+        "Panel 0 is the known opening panel. Keep it first and order only panels 1 onward. "
         "Do not generate the order; provide an internal representation for classification."
     )
     if dialog_texts:

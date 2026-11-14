@@ -93,7 +93,7 @@ def main() -> None:
         raise ValueError(f"manifest has no {args.split} samples")
     run_dir = args.run_root / args.run_id
     config = {key: (str(value) if isinstance(value, Path) else value) for key, value in vars(args).items()}
-    config.update({"experiment": "RQ4_prompting", "modes": list(MODES), "same_checkpoint": True, "same_decoding_budget": True})
+    config.update({"task": "order_remaining_given_first", "experiment": "RQ4_prompting", "modes": list(MODES), "same_checkpoint": True, "same_decoding_budget": True})
     config.update(snapshot_checkpoint(args.checkpoint, run_dir))
     logger = ExperimentLogger(run_dir, config)
     results = {}

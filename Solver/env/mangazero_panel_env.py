@@ -37,6 +37,7 @@ class MangaZeroPanelOrderingEnv:
             split=split,
             image_size=image_size,
             use_layout=use_layout,
+            given_first=True,
         )
         self.rng = random.Random(seed)
         self.invalid_action_penalty = invalid_action_penalty
@@ -48,7 +49,7 @@ class MangaZeroPanelOrderingEnv:
         if index is None:
             index = self.rng.randrange(len(self.dataset))
         self.current_sample = self.dataset[index]
-        self.selected_order = []
+        self.selected_order = [0]
         self.done = False
         return self._observation()
 
@@ -90,6 +91,8 @@ class MangaZeroPanelOrderingEnv:
             "dialog_texts": self.current_sample["dialog_texts"],
             "selected_order": torch.tensor(self.selected_order, dtype=torch.long),
             "selected_mask": selected_mask,
+            "given_first_index": 0,
+            "task": "order_remaining_given_first",
             "done": self.done,
         }
         if "layout_features" in self.current_sample:
@@ -111,12 +114,15 @@ class MangaZeroPanelOrderingEnv:
             "position_accuracy": 0.0,
             "pairwise_accuracy": 0.0,
         }
-        if pred:
-            compare_len = min(len(pred), len(target))
+        remaining_pred, remaining_target = pred[1:], target[1:]
+        if remaining_pred:
+            compare_len = min(len(remaining_pred), len(remaining_target))
             info["position_accuracy"] = sum(
-                int(pred[i] == target[i]) for i in range(compare_len)
-            ) / len(target)
+                int(remaining_pred[i] == remaining_target[i]) for i in range(compare_len)
+            ) / len(remaining_target)
         if complete:
             info["exact_match"] = float(pred == target)
-            info["pairwise_accuracy"] = pairwise_accuracy(pred, target)
+            info["pairwise_accuracy"] = (
+                pairwise_accuracy(remaining_pred, remaining_target) if len(remaining_target) > 1 else 1.0
+            )
         return info

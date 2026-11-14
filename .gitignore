@@ -18,3 +18,4 @@ Solver/checkpoints*
 *.pyc
 *.zip
 third_party/*
+experiments/*

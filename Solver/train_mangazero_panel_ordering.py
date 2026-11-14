@@ -17,6 +17,8 @@ from statistics import mean
 from typing import Any
 
 import torch
+
+from Solver.data.given_start import shuffle_remaining_batch, remaining_order_metrics
 from torch.utils.data import DataLoader
 
 sys.path.append(".")
@@ -265,33 +267,8 @@ def move_batch(batch: dict[str, Any], device: torch.device, use_layout: bool) ->
 
 
 def randomize_training_batch(batch: dict[str, Any], use_layout: bool) -> dict[str, Any]:
-    """Restore canonical panel order from labels, then shuffle again online."""
-    if "panel_images" not in batch or "target_order" not in batch:
-        return batch
-
-    moved = dict(batch)
-    panel_images = batch["panel_images"]
-    target_order = batch["target_order"].long()
-    batch_size, panel_count = target_order.shape
-
-    canonical_images = gather_batch_by_order(panel_images, target_order)
-    permutation = torch.stack([torch.randperm(panel_count) for _ in range(batch_size)], dim=0)
-    moved["panel_images"] = gather_batch_by_order(canonical_images, permutation)
-    moved["target_order"] = torch.argsort(permutation, dim=1)
-
-    if use_layout and "layout_features" in batch:
-        moved["layout_features"] = gather_batch_by_order(batch["layout_features"], target_order)
-        moved["layout_features"] = gather_batch_by_order(moved["layout_features"], permutation)
-
-    if "dialog_texts" in batch:
-        canonical_dialog_texts = reorder_nested_list(batch["dialog_texts"], target_order)
-        moved["dialog_texts"] = reorder_nested_list(canonical_dialog_texts, permutation)
-
-    if "panels" in batch:
-        canonical_panels = reorder_nested_list(batch["panels"], target_order)
-        moved["panels"] = reorder_nested_list(canonical_panels, permutation)
-
-    return moved
+    """Keep the opening panel fixed while shuffling all continuation modalities."""
+    return shuffle_remaining_batch(batch)
 
 
 def gather_batch_by_order(tensor: torch.Tensor, order: torch.Tensor) -> torch.Tensor:
@@ -312,16 +289,7 @@ def reorder_nested_list(items: list[Any], order: torch.Tensor) -> list[list[Any]
 
 
 def ordering_metrics(pred: torch.Tensor, target: torch.Tensor) -> dict[str, float]:
-    exact = pred.eq(target).all(dim=1).float().mean().item()
-    position = pred.eq(target).float().mean().item()
-    pairwise_scores = []
-    for pred_row, target_row in zip(pred.tolist(), target.tolist()):
-        pairwise_scores.append(pairwise_accuracy(pred_row, target_row))
-    return {
-        "exact_match": float(exact),
-        "position_accuracy": float(position),
-        "pairwise_accuracy": float(mean(pairwise_scores)) if pairwise_scores else 0.0,
-    }
+    return remaining_order_metrics(pred, target)
 
 
 def pairwise_accuracy(pred_order: list[int], target_order: list[int]) -> float:
@@ -390,7 +358,8 @@ def save_checkpoint(
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "epoch": epoch,
-            "config": vars(args),
+            "config": {**vars(args), "task": "order_remaining_given_first"},
+            "task": "order_remaining_given_first",
         },
         path,
     )

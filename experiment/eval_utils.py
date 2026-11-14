@@ -79,6 +79,7 @@ def load_dataset(manifest: Path, split: str, args: argparse.Namespace) -> MangaZ
         split=split,
         image_size=(args.image_width, args.image_height),
         use_layout=False,
+        given_first=True,
         allow_empty=True,
         manifest_path=manifest,
     )
@@ -121,8 +122,9 @@ def run_condition(
             sequence_id = batch["sequence_id"][i]
             panel_count = images.shape[1]
             seed_value = int(hashlib.sha256(f"{seed}:{sequence_id}".encode("utf-8")).hexdigest()[:16], 16)
-            display_order = list(range(panel_count))
+            display_order = list(range(1, panel_count))
             random.Random(seed_value).shuffle(display_order)
+            display_order.insert(0, 0)
             original_to_display = {original: shown for shown, original in enumerate(display_order)}
             panels = [images[i, j] for j in display_order]
             texts = [batch["dialog_texts"][i][j] for j in display_order] if include_text else None
@@ -150,9 +152,11 @@ def run_condition(
                 scores[key].append(float(value))
             scores["valid_output"].append(float(valid))
             record = {
+                "task": "order_remaining_given_first", "given_first_index": 0,
                 "type": "prediction", "condition": condition,
                 "sequence_id": sequence_id, "style": batch["style"][i],
-                "work_id": batch["work_id"][i], "display_order_original_panel_ids": display_order,
+                "work_id": batch["work_id"][i],
+                "display_order_original_panel_ids": batch["input_panel_indices"][i, display_order].tolist(),
                 "target": target, "prediction": prediction if valid else None, "raw_output": str(raw),
                 "metrics": metrics, "valid_output": valid, "error_type": err,
             }

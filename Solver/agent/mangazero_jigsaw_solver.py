@@ -28,16 +28,16 @@ def build_permutation_bank(
     max_permutations: int | None = 1000,
     seed: int = 0,
 ) -> list[tuple[int, ...]]:
-    """Build a deterministic candidate bank without materializing all K! orders."""
+    """Build a deterministic candidate bank without materializing all (K-1)! continuation orders."""
     if panel_count <= 1:
         raise ValueError("panel_count must be greater than 1")
 
-    total = math.factorial(panel_count)
+    total = math.factorial(panel_count - 1)
     limit = total if max_permutations is None else int(max_permutations)
     if limit <= 0:
         raise ValueError("max_permutations must be positive or None")
     if limit >= total:
-        return list(itertools.permutations(range(panel_count)))
+        return [(0,) + tail for tail in itertools.permutations(range(1, panel_count))]
 
     rng = random.Random(seed)
     selected: list[tuple[int, ...]] = []
@@ -48,7 +48,7 @@ def build_permutation_bank(
     selected.append(identity)
     seen.add(identity)
     while len(selected) < limit:
-        candidate = tuple(rng.sample(range(panel_count), panel_count))
+        candidate = (0,) + tuple(rng.sample(range(1, panel_count), panel_count - 1))
         if candidate not in seen:
             seen.add(candidate)
             selected.append(candidate)
@@ -186,6 +186,12 @@ class MangaZeroJigsawSolver(nn.Module):
                 )
             result.append(class_id)
         return torch.tensor(result, dtype=torch.long, device=target_order.device)
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        bank = state_dict.get(prefix + "permutation_bank")
+        if bank is not None and not torch.equal(bank.cpu(), self.permutation_bank.cpu()):
+            raise ValueError("Checkpoint permutation bank does not match the given-start task and seed; retrain the classifier.")
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     @torch.no_grad()
     def predict_permutation(

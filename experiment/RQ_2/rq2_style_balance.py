@@ -89,6 +89,7 @@ def _dataset(manifest: Path, split: str, args: argparse.Namespace) -> MangaZeroP
         split=split,
         image_size=(args.image_width, args.image_height),
         use_layout=False,
+        given_first=True,
         allow_empty=True,
     )
 
@@ -237,6 +238,7 @@ def main() -> None:
 
     config = {key: (str(value) if isinstance(value, Path) else value) for key, value in vars(args).items() if key != "resume"}
     config["manifest_sha256"] = hashlib.sha256(args.manifest.read_bytes()).hexdigest()
+    config["task"] = "order_remaining_given_first"
     config.update({"effective_train_puzzles": budget, "train_style_counts": {style: sum(train_base.samples[i].style == style for i in selected) for style in ("manga", "comics")}, "selected_sequence_ids": [train_base.samples[i].sequence_id for i in selected]})
     run_id = args.run_id or f"{args.condition}_seed{args.seed}"
     run_dir = args.run_root / run_id

@@ -47,6 +47,7 @@ def main() -> None:
     run_dir = args.run_root / args.run_id
     config = {key: (str(value) if isinstance(value, Path) else value) for key, value in vars(args).items()}
     config["experiment"] = "RQ3_evidence_modalities"
+    config["task"] = "order_remaining_given_first"
     config["layout_blind_protocol"] = True
     config["visual_only_requires_masked_manifest"] = True
     config.update(snapshot_checkpoint(args.checkpoint, run_dir))

@@ -7,7 +7,8 @@ that asks for a comma-separated panel order, ``vlm_infer`` decodes it, and
 ``answer_generator`` parses the text back into a permutation.
 
 Training fine-tunes the backbone with LoRA on the instruction followed by the
-ground-truth order rendered as a string, e.g. ``2, 0, 1, 3``. The loss is the
+ground-truth continuation rendered as a string, e.g. ``2, 1, 3`` after given
+panel 0. The loss is the
 standard causal-LM cross entropy over the answer tokens.
 """
 
@@ -30,8 +31,10 @@ from Solver.agent.vlm_ordering_solver import (
 
 
 def format_order_label(order: Sequence[int], *, start_index: int = 0) -> str:
-    """Render a panel order as the training label string, e.g. ``2, 0, 1, 3``."""
-    return ", ".join(str(start_index + int(index)) for index in order)
+    """Render only the continuation; the full internal order starts with slot 0."""
+    if len(order) < 2 or order[0] != 0 or sorted(order) != list(range(len(order))):
+        raise ValueError("Expected a full permutation starting with given input slot 0")
+    return ", ".join(str(start_index + int(index)) for index in order[1:])
 
 
 def common_prefix_length(prefix: Tensor, full: Tensor) -> int:

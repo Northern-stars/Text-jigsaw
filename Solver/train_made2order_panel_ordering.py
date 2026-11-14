@@ -23,6 +23,8 @@ from statistics import mean
 from typing import Any
 
 import torch
+
+from Solver.data.given_start import shuffle_remaining_batch, remaining_order_metrics
 from torch.utils.data import DataLoader, Subset
 
 sys.path.append(".")
@@ -76,36 +78,12 @@ def move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
 
 
 def randomize_training_batch(batch: dict[str, Any]) -> dict[str, Any]:
-    """Shuffle panels again online; labels follow the dataset convention."""
-    panel_images = batch["panel_images"]
-    target_order = batch["target_order"].long()
-    batch_size, panel_count = target_order.shape
-
-    # target_order[i] maps input slot i to its canonical reading rank, so the
-    # canonical (unshuffled) input is panel_images.gather(1, target_order).
-    expanded_order = target_order.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).expand_as(panel_images)
-    canonical_images = panel_images.gather(1, expanded_order)
-    permutation = torch.stack([torch.randperm(panel_count) for _ in range(batch_size)], dim=0)
-    expanded_perm = permutation.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).expand_as(panel_images)
-    shuffled = canonical_images.gather(1, expanded_perm)
-
-    moved = dict(batch)
-    moved["panel_images"] = shuffled
-    moved["target_order"] = torch.argsort(permutation, dim=1)
-    return moved
+    """Keep the opening panel fixed while shuffling all continuation modalities."""
+    return shuffle_remaining_batch(batch)
 
 
 def ordering_metrics(pred: torch.Tensor, target: torch.Tensor) -> dict[str, float]:
-    exact = pred.eq(target).all(dim=1).float().mean().item()
-    position = pred.eq(target).float().mean().item()
-    pairwise_scores = []
-    for pred_row, target_row in zip(pred.tolist(), target.tolist()):
-        pairwise_scores.append(pairwise_accuracy(pred_row, target_row))
-    return {
-        "exact_match": float(exact),
-        "position_accuracy": float(position),
-        "pairwise_accuracy": float(mean(pairwise_scores)) if pairwise_scores else 0.0,
-    }
+    return remaining_order_metrics(pred, target)
 
 
 def pairwise_accuracy(pred_order: list[int], target_order: list[int]) -> float:
@@ -232,7 +210,8 @@ def save_checkpoint(
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "epoch": epoch,
-            "config": vars(args),
+            "config": {**vars(args), "task": "order_remaining_given_first"},
+            "task": "order_remaining_given_first",
         },
         path,
     )

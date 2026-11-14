@@ -254,10 +254,10 @@ class QwenVLVectorExpertSolver(MangaZeroQwenVLAutoregressiveSolver):
             self.activate_expert(expert_id)
             memories.append(self.encode_panels(panel_images, dialog_texts=dialog_texts))
             self.clear_expert()
-        selected = torch.empty(
-            panel_images.size(0), 0, dtype=torch.long, device=panel_images.device
+        selected = torch.zeros(
+            panel_images.size(0), 1, dtype=torch.long, device=panel_images.device
         )
-        for _ in range(self.panel_count):
+        for _ in range(self.panel_count - 1):
             expert_probabilities = []
             for expert_id, memory in enumerate(memories):
                 self.activate_expert(expert_id)

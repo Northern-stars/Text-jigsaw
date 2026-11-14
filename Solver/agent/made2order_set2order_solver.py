@@ -218,8 +218,9 @@ class Made2OrderPanelOrderingSolver(nn.Module):
         reading order, matching the dataset's target_order label format.
         """
         scores, _ = self.forward(video)
-        pred_ranks = scores.argmax(dim=-1)
-        return torch.argsort(pred_ranks, dim=-1)
+        pred_ranks = scores[:, 1:, 1:].argmax(dim=-1)
+        tail = torch.argsort(pred_ranks, dim=-1) + 1
+        return torch.cat([torch.zeros_like(tail[:, :1]), tail], dim=1)
 
     @staticmethod
     def ranking_loss(scores: Tensor, target_order: Tensor) -> Tensor:
@@ -233,22 +234,18 @@ class Made2OrderPanelOrderingSolver(nn.Module):
             raise ValueError(f"Expected (batch, panels, panels) scores, got {tuple(scores.shape)}")
         if target_order.ndim != 2:
             raise ValueError(f"Expected (batch, panels) target_order, got {tuple(target_order.shape)}")
-        ranks = torch.argsort(target_order.long(), dim=-1)
+        from Solver.data.given_start import validate_given_start
+        validate_given_start(target_order)
+        ranks = torch.argsort(target_order.long(), dim=-1)[:, 1:] - 1
         return torch.nn.functional.cross_entropy(
-            scores.reshape(-1, scores.size(-1)),
+            scores[:, 1:, 1:].reshape(-1, scores.size(-1) - 1),
             ranks.reshape(-1),
         )
 
     @staticmethod
     def order_metrics(pred_order: Tensor, target_order: Tensor) -> dict[str, float]:
-        pred = pred_order.long()
-        target = target_order.long()
-        exact = pred.eq(target).all(dim=1).float().mean().item()
-        position = pred.eq(target).float().mean().item()
-        return {
-            "exact_match": float(exact),
-            "position_accuracy": float(position),
-        }
+        from Solver.data.given_start import remaining_order_metrics
+        return remaining_order_metrics(pred_order.long(), target_order.long())
 
     def train_metrics(self, pred_order: Tensor, target_order: Tensor) -> dict[str, float]:
         return self.order_metrics(pred_order, target_order)

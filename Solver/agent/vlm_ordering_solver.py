@@ -136,8 +136,11 @@ def build_ordering_text_prompt(
         f"There are {panel_count} input panels numbered {panel_ids}. "
         "Use visual continuity, reading flow, characters, dialog bubbles, and scene transitions "
         "to infer the correct chronological reading order. "
-        f"Output the order as a comma-separated list of the {panel_count} panel numbers, "
-        "from first to last, and nothing else."
+        f"Panel {start_index} is the given opening panel. "
+        f"Order only the remaining {panel_count - 1} panels after it. "
+        f"Output a comma-separated list of panel numbers {start_index + 1} through "
+        f"{start_index + panel_count - 1} in reading order, each exactly once. "
+        f"Do not include the given Panel {start_index}. Output nothing else."
     )
     if texts:
         lines = []
@@ -261,14 +264,13 @@ def parse_ordering_answer(
     one_indexed: bool = False,
     strict: bool = True,
 ) -> list[int]:
-    """Parse model text into a permutation of ``0..panel_count-1``.
+    """Parse only continuation IDs, then prepend given slot 0 for internal use.
 
-    Accepts JSON arrays (``[2, 0, 1]``) or free-form number lists
-    (``2 -> 0 -> 1``, ``2, 0, 1``, newline separated). Numbers are deduplicated
-    in first-seen order and out-of-range values dropped. When ``strict`` and the
-    result is not a full permutation, a ``ValueError`` is raised; otherwise the
-    missing indices are appended in ascending order.
+    In strict mode the model must return each remaining ID exactly once and
+    exclude the given panel. Non-strict mode repairs invalid continuation IDs.
     """
+    if panel_count < 2:
+        raise ValueError("Given-start puzzles require at least two panels")
     text = "" if raw_text is None else str(raw_text).strip()
 
     numbers: list[int] = []
@@ -286,23 +288,22 @@ def parse_ordering_answer(
     if one_indexed:
         numbers = [value - 1 for value in numbers]
 
+    if strict:
+        if sorted(numbers) != list(range(1, panel_count)):
+            raise ValueError(f"Expected each remaining panel exactly once, excluding the given start: {text!r}")
+        return [0] + numbers
+
     order: list[int] = []
     seen: set[int] = set()
     for value in numbers:
-        if 0 <= value < panel_count and value not in seen:
+        if 1 <= value < panel_count and value not in seen:
             order.append(value)
             seen.add(value)
         if len(order) == panel_count:
             break
 
-    if len(order) < panel_count:
-        if strict:
-            raise ValueError(
-                f"could not parse a full permutation of {panel_count} panels "
-                f"from model output: {text!r}"
-            )
-        order.extend(index for index in range(panel_count) if index not in seen)
-    return order[:panel_count]
+    order.extend(index for index in range(1, panel_count) if index not in seen)
+    return [0] + order
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +387,10 @@ class QwenVLInfer:
 # ---------------------------------------------------------------------------
 
 class VLMOrderingSolver:
-    """Universal interface that turns a panel list (+ OCR texts) into an ordering.
+    """Order continuation panels with input slot 0 supplied as the known start.
+
+    Callers must place the known opening panel (and its OCR) in slot 0.
+    Results retain that leading zero; generated text contains only the tail.
 
     Parameters
     ----------
@@ -428,9 +432,11 @@ class VLMOrderingSolver:
         strict_answer: bool = True,
     ) -> None:
         self.vlm_infer = vlm_infer
-        self.prompt_generator = prompt_generator or build_ordering_messages
-        self.mirage_prompt_generator = mirage_prompt_generator or build_ordering_messages_mirage
-        self.guess_prompt_generator = guess_prompt_generator or build_ordering_messages_guess
+        from functools import partial
+        start_index = int(one_indexed)
+        self.prompt_generator = prompt_generator or partial(build_ordering_messages, start_index=start_index)
+        self.mirage_prompt_generator = mirage_prompt_generator or partial(build_ordering_messages_mirage, start_index=start_index)
+        self.guess_prompt_generator = guess_prompt_generator or partial(build_ordering_messages_guess, start_index=start_index)
         self.panel_count = panel_count
         if answer_generator is not None:
             self.answer_generator = answer_generator
@@ -569,3 +575,5 @@ class VLMOrderingSolver:
     def _validate(order: Sequence[int], panel_count: int) -> None:
         if len(order) != panel_count or sorted(order) != list(range(panel_count)):
             raise ValueError(f"answer is not a permutation of {panel_count} panels: {list(order)}")
+        if panel_count < 2 or order[0] != 0:
+            raise ValueError("The known opening panel must remain first")

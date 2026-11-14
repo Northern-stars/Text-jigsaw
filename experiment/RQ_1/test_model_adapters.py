@@ -20,11 +20,11 @@ class ModelAdapterTests(unittest.TestCase):
 
         def infer(prompt):
             calls.append(prompt)
-            return "[2, 0, 1]"
+            return "[2, 1]"
 
         solver = VLMOrderingSolver(vlm_infer=infer, panel_count=3)
         result = solver.solve([Image.new("RGB", (2, 2), "white") for _ in range(3)], ["a", "b", "c"])
-        self.assertEqual(result.order, [2, 0, 1])
+        self.assertEqual(result.order, [0, 2, 1])
         self.assertEqual(len(calls), 1)
 
     def test_unknown_model_family_is_explicit(self):

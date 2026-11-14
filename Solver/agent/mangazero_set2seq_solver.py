@@ -11,6 +11,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
+from Solver.data.given_start import validate_given_start
+
 
 class TorchvisionPretrainedViTEncoder(nn.Module):
     """Torchvision ViT feature extractor with optional pretrained weights."""
@@ -291,6 +293,7 @@ class MangaZeroSetToSequenceSolver(nn.Module):
         dialog_texts: Optional[list[list[str]]] = None,
     ) -> Tensor:
         memory = self.encode(panel_images, layout_features=layout_features, dialog_texts=dialog_texts)
+        validate_given_start(target_order)
         decoder_inputs = self._teacher_forcing_inputs(memory, target_order)
         causal_mask = torch.triu(
             torch.ones(self.panel_count, self.panel_count, device=panel_images.device, dtype=torch.bool),
@@ -341,9 +344,9 @@ class MangaZeroSetToSequenceSolver(nn.Module):
     ) -> Tensor:
         memory = self.encode(panel_images, layout_features=layout_features, dialog_texts=dialog_texts)
         batch_size = memory.size(0)
-        selected = torch.empty(batch_size, 0, dtype=torch.long, device=memory.device)
+        selected = torch.zeros(batch_size, 1, dtype=torch.long, device=memory.device)
 
-        for _ in range(self.panel_count):
+        for _ in range(self.panel_count - 1):
             decoder_inputs = self._decode_inputs_from_selected(memory, selected)
             causal_mask = torch.triu(
                 torch.ones(decoder_inputs.size(1), decoder_inputs.size(1), device=memory.device, dtype=torch.bool),
@@ -406,8 +409,11 @@ class MangaZeroSetToSequenceSolver(nn.Module):
 
 
 def pointer_cross_entropy(pointer_logits: Tensor, target_order: Tensor) -> Tensor:
-    panel_count = pointer_logits.size(1)
+    """Train only continuation decisions; the opening panel is supplied."""
+    validate_given_start(target_order)
+    if pointer_logits.shape[:2] != target_order.shape:
+        raise ValueError("Pointer logits must contain one row per full-order position")
     return F.cross_entropy(
-        pointer_logits.reshape(-1, pointer_logits.size(-1)),
-        target_order[:, :panel_count].reshape(-1),
+        pointer_logits[:, 1:].reshape(-1, pointer_logits.size(-1)),
+        target_order[:, 1:].reshape(-1),
     )

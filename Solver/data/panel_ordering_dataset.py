@@ -12,6 +12,8 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
+from Solver.data.given_start import with_given_start
+
 
 @dataclass(frozen=True)
 class MangaZeroPanelSample:
@@ -44,11 +46,13 @@ class MangaZeroPanelOrderingDataset(Dataset):
         use_layout: bool = True,
         allow_empty: bool = False,
         manifest_path: str | Path | None = None,
+        given_first: bool = False,
     ) -> None:
         self.dataset_dir = Path(dataset_dir)
         self.split = self._normalize_split(split)
         self.image_size = image_size
         self.use_layout = use_layout
+        self.given_first = given_first
         self.manifest_path = Path(manifest_path) if manifest_path is not None else None
         self.samples = self._load_samples()
         if not self.samples and not allow_empty:
@@ -86,7 +90,7 @@ class MangaZeroPanelOrderingDataset(Dataset):
         }
         if self.use_layout:
             item["layout_features"] = torch.tensor(layout_features, dtype=torch.float32)
-        return item
+        return with_given_start(item) if self.given_first else item
 
     def _load_samples(self) -> list[MangaZeroPanelSample]:
         split_jsonl_path = self.manifest_path or (self.dataset_dir / f"{self.split}.jsonl")
@@ -256,6 +260,7 @@ def load_panel_ordering_splits(
     dataset_dir: str | Path,
     image_size: tuple[int, int] | None = None,
     use_layout: bool = True,
+    given_first: bool = True,
 ) -> tuple[MangaZeroPanelOrderingDataset, MangaZeroPanelOrderingDataset, MangaZeroPanelOrderingDataset]:
     """Load train, validation, and test sets recorded in the dataset manifests."""
     return tuple(
@@ -265,6 +270,7 @@ def load_panel_ordering_splits(
             image_size=image_size,
             use_layout=use_layout,
             allow_empty=split != "train",
+            given_first=given_first,
         )
         for split in ("train", "val", "test")
     )
@@ -302,4 +308,8 @@ def collate_panel_ordering_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
     }
     if "layout_features" in batch[0]:
         result["layout_features"] = torch.stack([item["layout_features"] for item in batch], dim=0)
+    if "given_first_index" in batch[0]:
+        result["given_first_index"] = torch.tensor([item["given_first_index"] for item in batch])
+        result["task"] = [item["task"] for item in batch]
+        result["input_panel_indices"] = torch.stack([item["input_panel_indices"] for item in batch])
     return result

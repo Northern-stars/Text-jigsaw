@@ -305,7 +305,8 @@ def save_checkpoint(
             "expert_state": model.expert_checkpoint_state(),
             "optimizer": optimizer.state_dict(),
             "epoch": epoch,
-            "config": vars(args),
+            "config": {**vars(args), "task": "order_remaining_given_first"},
+            "task": "order_remaining_given_first",
         },
         path,
     )

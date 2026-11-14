@@ -1,7 +1,7 @@
 """Direct permutation classifier for MangaZero panel ordering.
 
 This solver treats each possible panel order as one hard-coded class. For a
-fixed panel count K, the classifier predicts one of K! lexicographic
+fixed panel count K, slot 0 is given and the classifier predicts one of (K-1)! lexicographic
 permutation classes, then maps that class back to a full target_order.
 """
 
@@ -60,10 +60,10 @@ class MangaZeroPermutationClassifier(nn.Module):
         self.use_visual = solver_type in {"visual", "multimodal"}
         self.use_text = solver_type in {"text", "multimodal"}
         self.use_layout = use_layout
-        self.num_classes = math.factorial(panel_count)
+        self.num_classes = math.factorial(panel_count - 1)
 
         class_orders = torch.tensor(
-            list(itertools.permutations(range(panel_count))),
+            [(0,) + tail for tail in itertools.permutations(range(1, panel_count))],
             dtype=torch.long,
         )
         self.register_buffer("class_orders", class_orders, persistent=False)

@@ -251,6 +251,7 @@ def main() -> None:
         image_height = int(merged_config.get("image_height", 224))
         train_dataset = MangaZeroPanelOrderingDataset(
             args.dataset_dir,
+            given_first=True,
             split="train",
             image_size=(image_width, image_height),
             use_layout=False,
@@ -322,8 +323,8 @@ def main() -> None:
             print("memory_delta_absmax:", delta)
             print("prediction_changed_by_load:", bool((predict_before != predict_after).any().item()))
         target = batch["target_order"].to(predict_after.device)
-        hits = int((predict_after == target).sum().item())
-        print(f"single_batch_position_hits={hits}/{target.numel()}")
+        hits = int((predict_after[:, 1:] == target[:, 1:]).sum().item())
+        print(f"single_batch_remaining_position_hits={hits}/{target[:, 1:].numel()}")
 
     print("\nDone.")
 

@@ -27,7 +27,6 @@ from Solver.agent.mangazero_jigsaw_solver import (
     gather_by_order,
     inverse_permutation,
     jigsaw_cross_entropy,
-    recover_canonical_batch,
 )
 from Solver.data.panel_ordering_dataset import (
     MangaZeroPanelOrderingDataset,
@@ -268,11 +267,15 @@ def prepare_self_supervised_batch(
         raise ValueError(
             f"expected target_order shape [B,{panel_count}], got {tuple(target_order.shape)}"
         )
-    canonical_images, canonical_layout, canonical_panels = recover_canonical_batch(
-        batch["panel_images"],
-        batch["panels"],
-        batch.get("layout_features"),
+    # target_order is the authoritative sequence of input slots in reading order.
+    canonical_images = gather_by_order(batch["panel_images"], target_order)
+    canonical_layout = (
+        gather_by_order(batch["layout_features"], target_order) if "layout_features" in batch else None
     )
+    canonical_panels = [
+        [items[index] for index in order]
+        for items, order in zip(batch["panels"], target_order.tolist())
+    ] if "panels" in batch else None
     batch_size = target_order.size(0)
     class_ids = torch.randint(
         low=0,
@@ -285,12 +288,21 @@ def prepare_self_supervised_batch(
     # ``permutation`` is input_position -> canonical_panel. The current
     # MangaZero API expects its inverse: canonical_panel -> input_position.
     prepared["target_order"] = inverse_permutation(permutation)
+    if "input_panel_indices" in batch:
+        display = target_order.gather(1, permutation.to(target_order.device))
+        prepared["input_panel_indices"] = batch["input_panel_indices"].gather(1, display.to(batch["input_panel_indices"].device))
     if canonical_layout is not None:
         prepared["layout_features"] = gather_by_order(canonical_layout, permutation)
     if canonical_panels is not None:
         prepared["panels"] = [
             [sample_items[index] for index in sample_order]
             for sample_items, sample_order in zip(canonical_panels, permutation.tolist())
+        ]
+    if "dialog_texts" in batch:
+        display = target_order.gather(1, permutation.to(target_order.device))
+        prepared["dialog_texts"] = [
+            [items[index] for index in order]
+            for items, order in zip(batch["dialog_texts"], display.tolist())
         ]
     return prepared
 
@@ -316,7 +328,8 @@ def save_checkpoint(
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "epoch": epoch,
-            "config": vars(args),
+            "config": {**vars(args), "task": "order_remaining_given_first"},
+            "task": "order_remaining_given_first",
             "solver_family": "mangazero_jigsaw",
             "num_classes": model.num_classes,
         },
