@@ -15,7 +15,7 @@ import torch
 from PIL import Image
 from torch import Tensor, nn
 
-from Solver.data.given_start import validate_given_start
+from Solver.puzzle import validate_order as validate_given_start
 
 
 class MangaZeroQwenVLAutoregressiveSolver(nn.Module):
@@ -51,8 +51,8 @@ class MangaZeroQwenVLAutoregressiveSolver(nn.Module):
         trust_remote_code: bool = True,
     ) -> None:
         super().__init__()
-        if panel_count <= 1:
-            raise ValueError("panel_count must be greater than 1")
+        if panel_count < 3:
+            raise ValueError("panel_count must be at least 3")
         self.panel_count = panel_count
         self.model_name = model_name
         self.decoder_dim = decoder_dim
@@ -271,7 +271,8 @@ class MangaZeroQwenVLAutoregressiveSolver(nn.Module):
         )
         hidden = outputs.hidden_states[-1]
         memory = self._pool_per_panel(hidden, inputs)
-        memory = memory.to(dtype=next(self.panel_projection.parameters()).dtype)
+        parameter = next(self.panel_projection.parameters())
+        memory = memory.to(device=parameter.device, dtype=parameter.dtype)
         memory = self.panel_projection(memory)
         memory = self.panel_norm(memory)
         return memory
@@ -373,7 +374,7 @@ class MangaZeroQwenVLAutoregressiveSolver(nn.Module):
         batch_size = memory.size(0)
         selected = torch.zeros(batch_size, 1, dtype=torch.long, device=memory.device)
 
-        for _ in range(self.panel_count - 1):
+        for _ in range(self.panel_count - 2):
             decoder_inputs = self._decode_inputs_from_selected(memory, selected)
             causal_mask = torch.triu(
                 torch.ones(decoder_inputs.size(1), decoder_inputs.size(1), device=memory.device, dtype=torch.bool),
@@ -383,10 +384,11 @@ class MangaZeroQwenVLAutoregressiveSolver(nn.Module):
             logits = self._pointer_logits(decoder_states[:, -1:], memory).squeeze(1)
             if selected.numel() > 0:
                 logits.scatter_(1, selected, -torch.inf)
+            logits[:, -1] = -torch.inf
             next_index = logits.argmax(dim=-1, keepdim=True)
             selected = torch.cat([selected, next_index], dim=1)
 
-        return selected
+        return torch.cat([selected, torch.full_like(selected[:, :1], self.panel_count - 1)], dim=1)
 
     def _teacher_forcing_inputs(self, memory: Tensor, target_order: Tensor) -> Tensor:
         batch_size = memory.size(0)
@@ -428,6 +430,7 @@ class MangaZeroQwenVLAutoregressiveSolver(nn.Module):
             if step > 0:
                 previous = target_order[:, :step]
                 selected_mask[:, step, :].scatter_(1, previous, True)
+        selected_mask[:, 1:-1, -1] = True
         return logits.masked_fill(selected_mask, -torch.inf)
 
     # ------------------------------------------------------------------
@@ -442,6 +445,9 @@ class MangaZeroQwenVLAutoregressiveSolver(nn.Module):
                 if not name.startswith("backbone.")
             },
         }
+        if not hasattr(self.backbone, "peft_config"):
+            state["backbone"] = {}
+            return state
         try:
             from peft import get_peft_model_state_dict
         except ImportError:
@@ -522,7 +528,7 @@ def build_ordering_prompt(panel_count: int, dialog_texts: list[str] | None = Non
         f"There are {panel_count} input panels numbered {panel_ids}. "
         "Use visual continuity, reading flow, characters, dialog bubbles, and scene transitions "
         "to infer the correct chronological reading order. "
-        "Panel 0 is the known opening panel. Keep it first and order only panels 1 onward. "
+        f"Panel 0 is the known opening and panel {panel_count - 1} is the known ending. Order only the middle panels. "
         "Do not generate the order; provide an internal representation for classification."
     )
     if dialog_texts:

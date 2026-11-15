@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from Solver.agent.qwen_vl_ordering_solver import QwenVLOrderingSolver
 from Solver.data.panel_ordering_dataset import MangaZeroPanelOrderingDataset, collate_panel_ordering_batch
-from Solver.train_mangazero_panel_ordering import ordering_metrics
+from Solver.utils import ordering_metrics
 from experiment.run_logger import ExperimentLogger
 
 
@@ -48,6 +48,25 @@ def add_model_args(parser: argparse.ArgumentParser) -> None:
 
 
 def build_solver(args: argparse.Namespace) -> QwenVLOrderingSolver:
+    state = ExperimentLogger.load_checkpoint(args.checkpoint, restore_rng=False, map_location="cpu")
+    if state.get("schema_version") == 1:
+        from Solver.puzzle import TASK
+        from Solver.runtime import restore_checkpoint
+        from Solver.solvers import create_solver
+        if state.get("task") != TASK:
+            raise ValueError("Experiment checkpoint task differs from endpoint ordering")
+        if state["solver"] != "qwen_vl":
+            raise ValueError("RQ3/RQ4 prompting requires a generative qwen_vl checkpoint")
+        options = dict(state["config"]["model_options"])
+        if options["panel_count"] != args.panel_count:
+            raise ValueError("Experiment panel count differs from checkpoint")
+        options.update(torch_dtype=args.torch_dtype, device_map=args.device_map,
+                       load_in_4bit=args.load_in_4bit, max_new_tokens=args.max_new_tokens)
+        wrapped = create_solver("qwen_vl", options).place(args.device,
+            dispatched=bool(args.load_in_4bit or args.device_map))
+        restore_checkpoint(state, wrapped)
+        wrapped.eval()
+        return wrapped.model
     solver = QwenVLOrderingSolver(
         model_name=args.model_name,
         revision=args.model_revision,
@@ -65,7 +84,6 @@ def build_solver(args: argparse.Namespace) -> QwenVLOrderingSolver:
         lora_target_modules=tuple(v.strip() for v in args.lora_target_modules.split(",") if v.strip()),
         max_new_tokens=args.max_new_tokens,
     )
-    state = ExperimentLogger.load_checkpoint(args.checkpoint, restore_rng=False, map_location=args.device)
     solver.load_trainable_state_dict(state["model"])
     if not args.load_in_4bit and args.device_map is None:
         solver.backbone.to(torch.device(args.device))
@@ -79,7 +97,7 @@ def load_dataset(manifest: Path, split: str, args: argparse.Namespace) -> MangaZ
         split=split,
         image_size=(args.image_width, args.image_height),
         use_layout=False,
-        given_first=True,
+        given_endpoints=True,
         allow_empty=True,
         manifest_path=manifest,
     )
@@ -122,9 +140,10 @@ def run_condition(
             sequence_id = batch["sequence_id"][i]
             panel_count = images.shape[1]
             seed_value = int(hashlib.sha256(f"{seed}:{sequence_id}".encode("utf-8")).hexdigest()[:16], 16)
-            display_order = list(range(1, panel_count))
+            display_order = list(range(1, panel_count - 1))
             random.Random(seed_value).shuffle(display_order)
             display_order.insert(0, 0)
+            display_order.append(panel_count - 1)
             original_to_display = {original: shown for shown, original in enumerate(display_order)}
             panels = [images[i, j] for j in display_order]
             texts = [batch["dialog_texts"][i][j] for j in display_order] if include_text else None
@@ -152,7 +171,7 @@ def run_condition(
                 scores[key].append(float(value))
             scores["valid_output"].append(float(valid))
             record = {
-                "task": "order_remaining_given_first", "given_first_index": 0,
+                "task": "order_middle_given_first_last", "given_first_index": 0,
                 "type": "prediction", "condition": condition,
                 "sequence_id": sequence_id, "style": batch["style"][i],
                 "work_id": batch["work_id"][i],

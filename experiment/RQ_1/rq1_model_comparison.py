@@ -25,7 +25,7 @@ from torch.utils.data import DataLoader, Subset
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from Solver.data.panel_ordering_dataset import MangaZeroPanelOrderingDataset, collate_panel_ordering_batch
-from Solver.train_mangazero_panel_ordering import ordering_metrics
+from Solver.utils import ordering_metrics
 from experiment.RQ_1.model_adapters import MODEL_ADAPTERS, create_adapter
 from experiment.run_logger import ExperimentLogger
 
@@ -53,9 +53,9 @@ def parse_args() -> argparse.Namespace:
 
 def _display_order(sequence_id: str, count: int, seed: int) -> list[int]:
     digest = hashlib.sha256(f"{seed}:{sequence_id}".encode("utf-8")).hexdigest()
-    order = list(range(1, count))
+    order = list(range(1, count - 1))
     random.Random(int(digest[:16], 16)).shuffle(order)
-    return [0] + order
+    return [0] + order + [count - 1]
 
 
 def main() -> None:
@@ -67,7 +67,7 @@ def main() -> None:
         split=args.split,
         image_size=(224, 224),
         use_layout=False,
-        given_first=True,
+        given_endpoints=True,
         allow_empty=True,
         manifest_path=args.manifest,
     )
@@ -82,7 +82,7 @@ def main() -> None:
 
     run_dir = args.run_root / args.run_id
     config = {key: (str(value) if isinstance(value, Path) else value) for key, value in vars(args).items()}
-    config.update({"task": "order_remaining_given_first", "experiment": "RQ1_model_comparison", "layout_blind": True, "adapter_protocol": "VLMOrderingSolver.solve"})
+    config.update({"task": "order_middle_given_first_last", "experiment": "RQ1_model_comparison", "layout_blind": True, "adapter_protocol": "VLMOrderingSolver.solve"})
     logger = ExperimentLogger(run_dir, config)
     adapter_kwargs = {
         "panel_count": args.panel_count,
@@ -129,7 +129,7 @@ def main() -> None:
             "type": "prediction", "model_family": args.model_family, "model_name": args.model_name,
             "sequence_id": sequence_id, "style": batch["style"][0], "work_id": batch["work_id"][0],
             "display_order_original_panel_ids": batch["input_panel_indices"][0, display_order].tolist(), "target": target,
-            "task": "order_remaining_given_first", "given_first_index": 0,
+            "task": "order_middle_given_first_last", "given_first_index": 0,
             "prediction": result.order if valid else None, "raw_output": result.raw_output,
             "metrics": score, "valid_output": valid, "error_type": error,
             "latency_seconds": latency_seconds,

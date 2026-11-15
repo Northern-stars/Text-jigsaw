@@ -112,8 +112,8 @@ class Made2OrderPanelOrderingSolver(nn.Module):
         device: torch.device | str | None = None,
     ) -> None:
         super().__init__()
-        if panel_count < 2:
-            raise ValueError("panel_count must be at least 2")
+        if panel_count < 3:
+            raise ValueError("panel_count must be at least 3")
         if panel_count > SEQUENCE_LEN_LIMIT:
             raise ValueError(f"made2order supports at most {SEQUENCE_LEN_LIMIT} panels")
         if patch_size <= 0:
@@ -218,9 +218,9 @@ class Made2OrderPanelOrderingSolver(nn.Module):
         reading order, matching the dataset's target_order label format.
         """
         scores, _ = self.forward(video)
-        pred_ranks = scores[:, 1:, 1:].argmax(dim=-1)
+        pred_ranks = scores[:, 1:-1, 1:-1].argmax(dim=-1)
         tail = torch.argsort(pred_ranks, dim=-1) + 1
-        return torch.cat([torch.zeros_like(tail[:, :1]), tail], dim=1)
+        return torch.cat([torch.zeros_like(tail[:, :1]), tail, torch.full_like(tail[:, :1], scores.size(1) - 1)], dim=1)
 
     @staticmethod
     def ranking_loss(scores: Tensor, target_order: Tensor) -> Tensor:
@@ -234,17 +234,17 @@ class Made2OrderPanelOrderingSolver(nn.Module):
             raise ValueError(f"Expected (batch, panels, panels) scores, got {tuple(scores.shape)}")
         if target_order.ndim != 2:
             raise ValueError(f"Expected (batch, panels) target_order, got {tuple(target_order.shape)}")
-        from Solver.data.given_start import validate_given_start
+        from Solver.puzzle import validate_order as validate_given_start
         validate_given_start(target_order)
-        ranks = torch.argsort(target_order.long(), dim=-1)[:, 1:] - 1
+        ranks = torch.argsort(target_order.long(), dim=-1)[:, 1:-1] - 1
         return torch.nn.functional.cross_entropy(
-            scores[:, 1:, 1:].reshape(-1, scores.size(-1) - 1),
+            scores[:, 1:-1, 1:-1].reshape(-1, scores.size(-1) - 2),
             ranks.reshape(-1),
         )
 
     @staticmethod
     def order_metrics(pred_order: Tensor, target_order: Tensor) -> dict[str, float]:
-        from Solver.data.given_start import remaining_order_metrics
+        from Solver.puzzle import ordering_metrics as remaining_order_metrics
         return remaining_order_metrics(pred_order.long(), target_order.long())
 
     def train_metrics(self, pred_order: Tensor, target_order: Tensor) -> dict[str, float]:

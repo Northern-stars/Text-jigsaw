@@ -32,9 +32,9 @@ from Solver.agent.vlm_ordering_solver import (
 
 def format_order_label(order: Sequence[int], *, start_index: int = 0) -> str:
     """Render only the continuation; the full internal order starts with slot 0."""
-    if len(order) < 2 or order[0] != 0 or sorted(order) != list(range(len(order))):
+    if len(order) < 3 or order[0] != 0 or order[-1] != len(order) - 1 or sorted(order) != list(range(len(order))):
         raise ValueError("Expected a full permutation starting with given input slot 0")
-    return ", ".join(str(start_index + int(index)) for index in order[1:])
+    return ", ".join(str(start_index + int(index)) for index in order[1:-1])
 
 
 def common_prefix_length(prefix: Tensor, full: Tensor) -> int:

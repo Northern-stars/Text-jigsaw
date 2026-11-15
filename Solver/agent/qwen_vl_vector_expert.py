@@ -116,15 +116,18 @@ class QwenVLVectorExpertSolver(MangaZeroQwenVLAutoregressiveSolver):
     ) -> None:
         base_path = Path(base_checkpoint)
         checkpoint = _torch_load(base_path, "cpu")
-        family = checkpoint.get("solver_family")
+        family = checkpoint.get("solver_family", checkpoint.get("solver"))
         if family not in {None, "qwen_vl_autoregressive"}:
             raise ValueError(f"unsupported shared checkpoint family: {family}")
         config = checkpoint.get("config", {})
+        config = config.get("model_options", config)
         model_kwargs = _model_kwargs_from_checkpoint(config, model_kwargs)
         model_kwargs["use_lora"] = True
         super().__init__(panel_count=panel_count, **model_kwargs)
 
         state = checkpoint.get("model", checkpoint)
+        if "format" in state:
+            state = state["weights"]
         self.load_trainable_state_dict(state)
         self.base_checkpoint = str(base_path.resolve())
         self.feature_mode = feature_mode
@@ -257,7 +260,7 @@ class QwenVLVectorExpertSolver(MangaZeroQwenVLAutoregressiveSolver):
         selected = torch.zeros(
             panel_images.size(0), 1, dtype=torch.long, device=panel_images.device
         )
-        for _ in range(self.panel_count - 1):
+        for _ in range(self.panel_count - 2):
             expert_probabilities = []
             for expert_id, memory in enumerate(memories):
                 self.activate_expert(expert_id)
@@ -280,10 +283,11 @@ class QwenVLVectorExpertSolver(MangaZeroQwenVLAutoregressiveSolver):
                 self.clear_expert()
                 if selected.numel():
                     logits = logits.scatter(1, selected, -torch.inf)
+                logits[:, -1] = -torch.inf
                 expert_probabilities.append(logits.softmax(dim=-1))
             next_index = torch.stack(expert_probabilities).mean(0).argmax(-1, keepdim=True)
             selected = torch.cat([selected, next_index], dim=1)
-        return selected
+        return torch.cat([selected, torch.full_like(selected[:, :1], self.panel_count - 1)], dim=1)
 
     def expert_trainable_parameters(self) -> list[nn.Parameter]:
         parameters = [self.expert_vectors]
@@ -404,11 +408,8 @@ def _model_kwargs_from_checkpoint(config: dict[str, Any], overrides: dict[str, A
         "device_map",
     )
     values = {key: config[key] for key in keys if key in config}
-    values["lora_target_modules"] = tuple(
-        item.strip()
-        for item in str(values.get("lora_target_modules", "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj")).split(",")
-        if item.strip()
-    )
+    modules = values.get("lora_target_modules", "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj")
+    values["lora_target_modules"] = tuple(item.strip() for item in modules.split(",") if item.strip()) if isinstance(modules, str) else tuple(modules)
     values.update(overrides)
     return values
 

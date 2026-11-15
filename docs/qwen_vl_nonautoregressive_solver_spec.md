@@ -18,6 +18,7 @@ from Solver.agent.mangazero_qwen_vl_nonautoregressive import (
 )
 
 model = MangaZeroQwenVLNonAutoregressiveSolver(panel_count=6)
+# Input slots 0 and K-1 hold the GT opening/ending panels.
 logits = model(panel_images, target_order=target_order, dialog_texts=dialog_texts)
 loss = nonautoregressive_ordering_loss(logits, target_order)
 order = model.predict_order(panel_images, dialog_texts=dialog_texts)
@@ -29,3 +30,17 @@ objective. `predict_order` performs row-wise greedy bipartite matching and
 always returns a permutation. `trainable_state_dict` stores the projection,
 set encoder, parallel decoder, and (when enabled) Qwen LoRA weights, so the
 existing solver training/checkpoint conventions can be reused.
+
+## Unified training
+
+The ordering task now fixes both GT endpoints and predicts only the middle.
+Both directions of the loss operate on `logits[:, 1:-1, 1:-1]`. All panels
+remain visible to Qwen and the set encoder as context. `predict_order` keeps
+0 first and K-1 last and matches only the middle candidates.
+
+```sh
+python Solver/train.py --solver qwen_vl_nonautoregressive --dataset-dir Data/comix/6panel-ordering --panel-count 6 --epochs 3 --grad-accum-steps 8
+python Solver/test.py --solver qwen_vl_nonautoregressive --dataset-dir Data/comix/6panel-ordering --checkpoint Solver/checkpoints/qwen_vl_nonautoregressive/best.pt --split test
+```
+
+See `Solver/README.md` for checkpoint layout, model options and migration.

@@ -137,10 +137,11 @@ def build_ordering_text_prompt(
         "Use visual continuity, reading flow, characters, dialog bubbles, and scene transitions "
         "to infer the correct chronological reading order. "
         f"Panel {start_index} is the given opening panel. "
-        f"Order only the remaining {panel_count - 1} panels after it. "
+        f"Panel {start_index + panel_count - 1} is the given ending panel. "
+        f"Order only the middle {panel_count - 2} panels. "
         f"Output a comma-separated list of panel numbers {start_index + 1} through "
-        f"{start_index + panel_count - 1} in reading order, each exactly once. "
-        f"Do not include the given Panel {start_index}. Output nothing else."
+        f"{start_index + panel_count - 2} in reading order, each exactly once. "
+        "Do not include either given endpoint. Output nothing else."
     )
     if texts:
         lines = []
@@ -264,13 +265,13 @@ def parse_ordering_answer(
     one_indexed: bool = False,
     strict: bool = True,
 ) -> list[int]:
-    """Parse only continuation IDs, then prepend given slot 0 for internal use.
+    """Parse only middle IDs, then restore both endpoints for internal use.
 
     In strict mode the model must return each remaining ID exactly once and
     exclude the given panel. Non-strict mode repairs invalid continuation IDs.
     """
-    if panel_count < 2:
-        raise ValueError("Given-start puzzles require at least two panels")
+    if panel_count < 3:
+        raise ValueError("Endpoint puzzles require at least three panels")
     text = "" if raw_text is None else str(raw_text).strip()
 
     numbers: list[int] = []
@@ -289,21 +290,21 @@ def parse_ordering_answer(
         numbers = [value - 1 for value in numbers]
 
     if strict:
-        if sorted(numbers) != list(range(1, panel_count)):
-            raise ValueError(f"Expected each remaining panel exactly once, excluding the given start: {text!r}")
-        return [0] + numbers
+        if sorted(numbers) != list(range(1, panel_count - 1)):
+            raise ValueError(f"Expected each remaining panel exactly once, excluding both given endpoints: {text!r}")
+        return [0] + numbers + [panel_count - 1]
 
     order: list[int] = []
     seen: set[int] = set()
     for value in numbers:
-        if 1 <= value < panel_count and value not in seen:
+        if 1 <= value < panel_count - 1 and value not in seen:
             order.append(value)
             seen.add(value)
         if len(order) == panel_count:
             break
 
-    order.extend(index for index in range(1, panel_count) if index not in seen)
-    return [0] + order
+    order.extend(index for index in range(1, panel_count - 1) if index not in seen)
+    return [0] + order + [panel_count - 1]
 
 
 # ---------------------------------------------------------------------------
@@ -575,5 +576,5 @@ class VLMOrderingSolver:
     def _validate(order: Sequence[int], panel_count: int) -> None:
         if len(order) != panel_count or sorted(order) != list(range(panel_count)):
             raise ValueError(f"answer is not a permutation of {panel_count} panels: {list(order)}")
-        if panel_count < 2 or order[0] != 0:
-            raise ValueError("The known opening panel must remain first")
+        if panel_count < 3 or order[0] != 0 or order[-1] != panel_count - 1:
+            raise ValueError("Both known endpoints must retain their positions")

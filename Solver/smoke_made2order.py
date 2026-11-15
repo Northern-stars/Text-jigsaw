@@ -40,7 +40,7 @@ def main() -> None:
     device = torch.device(args.device)
 
     full = MangaZeroPanelOrderingDataset(
-        given_first=True,
+        given_endpoints=True,
         dataset_dir=args.dataset_dir,
         split="all",
         image_size=(args.image_size, args.image_size),

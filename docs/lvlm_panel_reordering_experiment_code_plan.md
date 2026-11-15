@@ -1,3 +1,5 @@
+> Implementation update: comic ordering now uses GT opening and ending panels and predicts only the middle. Use `Solver/train.py --solver NAME` and `Solver/test.py`; earlier per-model launch commands below are historical. See [Solver README](../Solver/README.md) for current commands and checkpoint compatibility.
+
 # LVLM Panel Reordering：四项研究问题的代码实验方案
 
 > RQ1 的通用 VLM 推理接口已接入 `experiment/RQ_1/model_adapters.py`，并提供统一比较入口 `experiment/RQ_1/rq1_model_comparison.py`。本方案中其余尚未实现的 runner/接口仍属于后续计划；已实现状态以各 `experiment/RQ_n/README.md` 为准。

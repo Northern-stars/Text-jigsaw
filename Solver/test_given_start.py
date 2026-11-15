@@ -13,6 +13,7 @@ from PIL import Image
 from torch import nn
 
 from Solver.data.given_start import with_given_start, shuffle_remaining_batch, remaining_order_metrics
+from Solver.puzzle import with_given_endpoints
 from Solver.data.panel_ordering_dataset import MangaZeroPanelOrderingDataset, collate_panel_ordering_batch
 from Solver.agent.mangazero_set2seq_solver import MangaZeroSetToSequenceSolver, pointer_cross_entropy
 from Solver.agent.mangazero_qwen_vl_autoregressive import MangaZeroQwenVLAutoregressiveSolver, pointer_cross_entropy as qwen_loss
@@ -24,7 +25,7 @@ from Solver.agent.qwen_vl_vector_expert import QwenVLVectorExpertSolver
 from Solver.agent.qwen_vl_ordering_solver import format_order_label
 from Solver.agent.vlm_ordering_solver import VLMOrderingSolver, parse_ordering_answer
 from Solver.env.mangazero_panel_env import MangaZeroPanelOrderingEnv
-from Solver.train_mangazero_jigsaw import prepare_self_supervised_batch
+from Solver.solvers.classifier import prepare_self_supervised_batch
 
 
 class GivenStartTests(unittest.TestCase):
@@ -89,7 +90,7 @@ class GivenStartTests(unittest.TestCase):
             self.assertEqual(shuffled["input_panel_indices"][0, shuffled["target_order"][0]].tolist(), [2, 0, 3, 1])
 
     def test_losses_ignore_start_and_metrics_do_not_award_free_credit(self):
-        target = torch.tensor([[0, 2, 3, 1]])
+        target = torch.tensor([[0, 2, 1, 3]])
         for loss_fn in (pointer_cross_entropy, qwen_loss):
             logits = torch.randn(1, 4, 4, requires_grad=True)
             loss = loss_fn(logits, target)
@@ -137,15 +138,15 @@ class GivenStartTests(unittest.TestCase):
             panel_count=4, solver_type="text", text_feature_dim=8, text_vocab_size=32,
             d_model=8, num_heads=2, encoder_layers=1, use_layout=False,
         )
-        self.assertEqual(model.num_classes, 6)
+        self.assertEqual(model.num_classes, 2)
         self.assertTrue(torch.all(model.class_orders[:, 0] == 0))
-        self.assertEqual(model.target_to_class_indices(model.class_orders).tolist(), list(range(6)))
-        self.assertEqual(MangaZeroQwenVLLoRAClassifier._num_permutations(6, 120), 120)
+        self.assertEqual(model.target_to_class_indices(model.class_orders).tolist(), list(range(2)))
+        self.assertEqual(MangaZeroQwenVLLoRAClassifier._num_permutations(6, 120), 24)
         with self.assertRaises(ValueError):
             model.target_to_class_indices(torch.tensor([[2, 0, 3, 1]]))
-        for limit in (3, None):
+        for limit in (1, None):
             bank = build_permutation_bank(4, limit)
-            self.assertEqual(len(bank), limit or 6)
+            self.assertEqual(len(bank), limit or 2)
             self.assertTrue(all(order[0] == 0 for order in bank))
 
     def test_jigsaw_preparation_uses_labels_and_keeps_start(self):
@@ -155,7 +156,7 @@ class GivenStartTests(unittest.TestCase):
         self.assertEqual(prepared["panel_images"][0, 0].item(), 2)
         self.assert_modalities(prepared)
         self.assertEqual(prepared["panel_images"][0, prepared["target_order"][0]].flatten().tolist(), [2, 0, 3, 1])
-        self.assertEqual(model.num_classes, 6)
+        self.assertEqual(model.num_classes, 2)
         self.assertEqual(model.target_to_class_indices(prepared["target_order"]).numel(), 1)
 
     def test_made2order_prediction_keeps_start_even_if_rank_scores_disagree(self):
@@ -165,7 +166,7 @@ class GivenStartTests(unittest.TestCase):
         scores[0, 2, 1] = 100
         scores[0, 3, 2] = 100
         stub = SimpleNamespace(forward=lambda _: (scores, None))
-        self.assertEqual(Made2OrderPanelOrderingSolver.predict_order(stub, None).tolist(), [[0, 2, 3, 1]])
+        self.assertEqual(Made2OrderPanelOrderingSolver.predict_order(stub, None).tolist(), [[0, 1, 2, 3]])
 
     def test_jigsaw_rejects_same_shape_checkpoint_with_different_class_meanings(self):
         model = MangaZeroJigsawSolver(4, max_permutations=3, feature_dim=8, hidden_dim=16)
@@ -173,33 +174,33 @@ class GivenStartTests(unittest.TestCase):
         state = model.state_dict()
         state["permutation_bank"] = state["permutation_bank"].clone()
         state["permutation_bank"][1] = torch.tensor([1, 0, 2, 3])
-        with self.assertRaisesRegex(ValueError, "given-start task"):
+        with self.assertRaisesRegex(ValueError, "endpoint task"):
             model.load_state_dict(state)
 
     def test_vlm_normal_mirage_guess_and_training_labels_match(self):
-        for one_indexed, response in ((False, "[3, 1, 2]"), (True, "[4, 2, 3]")):
+        for one_indexed, response in ((False, "[2, 1]"), (True, "[3, 2]")):
             solver = VLMOrderingSolver(lambda _: response, one_indexed=one_indexed)
             for method in (solver.solve, solver.mirage_inference, solver.guess_inference):
                 result = method([Image.new("RGB", (2, 2)) for _ in range(4)])
-                self.assertEqual(result.order, [0, 3, 1, 2])
+                self.assertEqual(result.order, [0, 2, 1, 3])
                 self.assertIn(f"Panel {int(one_indexed)} is the given opening panel", result.prompt[-1]["content"][-1]["text"])
-            self.assertEqual(format_order_label([0, 3, 1, 2], start_index=int(one_indexed)), response.strip("[]"))
-        for response in ("[0, 3, 1, 2]", "[1, 1, 2]", "[1, 2]", "[1, 2, 4]"):
+            self.assertEqual(format_order_label([0, 2, 1, 3], start_index=int(one_indexed)), response.strip("[]"))
+        for response in ("[0, 2, 1, 3]", "[1, 1, 2]", "[1]", "[1, 2, 4]"):
             with self.assertRaises(ValueError):
                 parse_ordering_answer(response, 4)
 
     def test_environment_starts_with_given_panel_and_rewards_only_tail(self):
-        sample = with_given_start(dict(self.item, sequence_id="test"))
+        sample = with_given_endpoints(dict(self.item, sequence_id="test"))
         with patch("Solver.env.mangazero_panel_env.MangaZeroPanelOrderingDataset", return_value=[sample]):
             env = MangaZeroPanelOrderingEnv("unused")
         obs = env.reset(0)
         self.assertEqual(obs["selected_order"].tolist(), [0])
-        self.assertEqual(obs["selected_mask"].tolist(), [True, False, False, False])
+        self.assertEqual(obs["selected_mask"].tolist(), [True, False, False, True])
         _, _, done, info = env.step(0)
         self.assertTrue(done)
         self.assertEqual(info["position_accuracy"], 0)
         env.reset(0)
-        for action in sample["target_order"][1:]:
+        for action in sample["target_order"][1:-1]:
             _, reward, done, info = env.step(action)
         self.assertTrue(done)
         self.assertEqual(reward, 2)

@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from Solver.data.given_start import validate_given_start
+from Solver.puzzle import validate_order as validate_given_start
 
 
 class TorchvisionPretrainedViTEncoder(nn.Module):
@@ -346,7 +346,7 @@ class MangaZeroSetToSequenceSolver(nn.Module):
         batch_size = memory.size(0)
         selected = torch.zeros(batch_size, 1, dtype=torch.long, device=memory.device)
 
-        for _ in range(self.panel_count - 1):
+        for _ in range(self.panel_count - 2):
             decoder_inputs = self._decode_inputs_from_selected(memory, selected)
             causal_mask = torch.triu(
                 torch.ones(decoder_inputs.size(1), decoder_inputs.size(1), device=memory.device, dtype=torch.bool),
@@ -356,10 +356,11 @@ class MangaZeroSetToSequenceSolver(nn.Module):
             logits = self._pointer_logits(decoder_states[:, -1:], memory).squeeze(1)
             if selected.numel() > 0:
                 logits.scatter_(1, selected, -torch.inf)
+            logits[:, -1] = -torch.inf
             next_index = logits.argmax(dim=-1, keepdim=True)
             selected = torch.cat([selected, next_index], dim=1)
 
-        return selected
+        return torch.cat([selected, torch.full_like(selected[:, :1], self.panel_count - 1)], dim=1)
 
     def _teacher_forcing_inputs(self, memory: Tensor, target_order: Tensor) -> Tensor:
         batch_size = memory.size(0)
@@ -401,6 +402,7 @@ class MangaZeroSetToSequenceSolver(nn.Module):
             if step > 0:
                 previous = target_order[:, :step]
                 selected_mask[:, step, :].scatter_(1, previous, True)
+        selected_mask[:, 1:-1, -1] = True
         return logits.masked_fill(selected_mask, -torch.inf)
 
     def _reset_parameters(self) -> None:
@@ -409,11 +411,11 @@ class MangaZeroSetToSequenceSolver(nn.Module):
 
 
 def pointer_cross_entropy(pointer_logits: Tensor, target_order: Tensor) -> Tensor:
-    """Train only continuation decisions; the opening panel is supplied."""
+    """Train only middle decisions; both endpoints are supplied."""
     validate_given_start(target_order)
     if pointer_logits.shape[:2] != target_order.shape:
         raise ValueError("Pointer logits must contain one row per full-order position")
     return F.cross_entropy(
-        pointer_logits[:, 1:].reshape(-1, pointer_logits.size(-1)),
-        target_order[:, 1:].reshape(-1),
+        pointer_logits[:, 1:-1, 1:-1].reshape(-1, pointer_logits.size(-1) - 2),
+        (target_order[:, 1:-1] - 1).reshape(-1),
     )

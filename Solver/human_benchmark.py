@@ -54,6 +54,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parse_args_with_config(parser, argv, script_file=__file__)
 
 
+from Solver.puzzle import endpoint_display_order
+
 def make_puzzle_image(
     panel_images: Sequence,
     displayed_indices: Sequence[int],
@@ -62,6 +64,7 @@ def make_puzzle_image(
     padding: int = 12,
     panel_texts: Sequence[str] | None = None,
     given_first: bool = False,
+    given_last: bool = False,
 ) -> Image.Image:
     """Create a numbered sheet, optionally placing the given opening panel on its own row."""
     if columns <= 0:
@@ -73,8 +76,10 @@ def make_puzzle_image(
     if hasattr(first, "detach"):
         first = first.detach().cpu().numpy()
     tile_height, tile_width = int(first.shape[-2]), int(first.shape[-1])
-    remaining_count = len(displayed_indices) - int(given_first)
+    remaining_count = len(displayed_indices) - int(given_first) - int(given_last)
     rows = int(given_first) + (remaining_count + columns - 1) // columns
+    if given_last and columns == 1:
+        rows += 1
     text_height = 82 if panel_texts is not None else 0
     canvas = Image.new(
         "RGB",
@@ -97,12 +102,16 @@ def make_puzzle_image(
         panel_image = Image.fromarray(panel.astype(np.uint8)).convert("RGB")
 
         row, column = divmod(position, columns)
-        if given_first and position > 0:
+        if given_last and position == len(displayed_indices) - 1:
+            row, column = (0, 1) if columns > 1 else (1, 0)
+        elif given_first and position > 0:
             row, column = divmod(position - 1, columns)
-            row += 1
+            row += 2 if given_last and columns == 1 else 1
         left = padding + column * (tile_width + padding)
         top = padding + row * (tile_height + 30 + text_height + padding)
         label = "Panel 1 (given start)" if given_first and position == 0 else f"Panel {position + 1}"
+        if given_last and position == len(displayed_indices) - 1:
+            label += " (given end)"
         draw.text((left, top), label, fill="black", font=font)
         canvas.paste(panel_image, (left, top + 20))
         if panel_texts is not None:
@@ -215,7 +224,7 @@ def wrap_to_pixel_width(
     return lines
 
 
-def parse_answer(answer: str, panel_count: int, *, first_panel_id: int = 1) -> list[int] | None:
+def parse_answer(answer: str, panel_count: int, *, first_panel_id: int = 1, last_panel_id: int | None = None) -> list[int] | None:
     """Parse IDs from first_panel_id through panel_count; None means quit/blank."""
     value = answer.strip().lower()
     if not value or value in {"q", "quit", "exit"}:
@@ -225,9 +234,10 @@ def parse_answer(answer: str, panel_count: int, *, first_panel_id: int = 1) -> l
         order = [int(token) for token in tokens]
     except ValueError as error:
         raise ValueError("Enter panel numbers separated by spaces or commas.") from error
-    expected = set(range(first_panel_id, panel_count + 1))
+    last_panel_id = panel_count if last_panel_id is None else last_panel_id
+    expected = set(range(first_panel_id, last_panel_id + 1))
     if len(order) != len(expected) or set(order) != expected:
-        raise ValueError(f"Use every panel number from {first_panel_id} to {panel_count} exactly once.")
+        raise ValueError(f"Use every panel number from {first_panel_id} to {last_panel_id} exactly once.")
     return order
 
 
@@ -268,7 +278,7 @@ def run_benchmark(args: argparse.Namespace) -> tuple[int, int]:
         results_handle = args.results_path.open("a", encoding="utf-8")
 
     print(f"Human benchmark: {len(dataset)} puzzles available in split '{args.split}'.")
-    print("Panel 1 is the given start. Order only the remaining panels; use q to finish.\n")
+    print("Panel 1 is the given start and the last panel is the given end. Order only the middle panels; use q to finish.\n")
 
     for question_number in range(1, args.num_questions + 1):
         if not sample_indices:
@@ -277,13 +287,11 @@ def run_benchmark(args: argparse.Namespace) -> tuple[int, int]:
         sample_index = sample_indices.pop()
         sample = dataset[sample_index]
         panel_count = int(sample["target_order"].numel())
-        if panel_count < 2:
-            raise ValueError("Each puzzle must contain a starting panel and at least one remaining panel.")
+        if panel_count < 3:
+            raise ValueError("Each puzzle must contain two endpoints and at least one middle panel.")
         target_order = sample["target_order"].tolist()
-        displayed_indices = [index for index in range(panel_count) if index != target_order[0]]
-        rng.shuffle(displayed_indices)
-        displayed_indices.insert(0, target_order[0])
-        truth = correct_display_order(target_order, displayed_indices)[1:]
+        displayed_indices = endpoint_display_order(target_order, rng)
+        truth = correct_display_order(target_order, displayed_indices)[1:-1]
         panel_texts = [
             panel_display_text(panel, args.panel_text_mode)
             for panel in sample["panels"]
@@ -295,6 +303,7 @@ def run_benchmark(args: argparse.Namespace) -> tuple[int, int]:
             columns=args.columns,
             panel_texts=display_texts,
             given_first=True,
+            given_last=True,
         )
 
         image_path = None
@@ -310,9 +319,10 @@ def run_benchmark(args: argparse.Namespace) -> tuple[int, int]:
         while True:
             try:
                 answer = parse_answer(
-                    input(f"After Panel 1, remaining order (2-{panel_count}, or q to quit): "),
+                    input(f"After Panel 1, middle order (2-{panel_count - 1}, or q to quit): "),
                     panel_count,
                     first_panel_id=2,
+                    last_panel_id=panel_count - 1,
                 )
                 break
             except ValueError as error:
@@ -329,7 +339,7 @@ def run_benchmark(args: argparse.Namespace) -> tuple[int, int]:
         if results_handle is not None:
             results_handle.write(json.dumps({
                 "benchmark_run_id": benchmark_run_id,
-                "task": "order_remaining_given_first",
+                "task": "order_middle_given_first_last",
                 "question_number": question_number,
                 "dataset_dir": str(args.dataset_dir.resolve()),
                 "split": args.split,
@@ -339,7 +349,7 @@ def run_benchmark(args: argparse.Namespace) -> tuple[int, int]:
                 "reading_order_method": sample["panels"][0].get("reading_order_method"),
                 "reading_direction": sample.get("reading_direction"),
                 "displayed_input_indices": displayed_indices,
-                "given_display_order": [1],
+                "given_display_order": [1, panel_count],
                 "reference_display_order": truth,
                 "answer": answer,
                 "correct": answer == truth,

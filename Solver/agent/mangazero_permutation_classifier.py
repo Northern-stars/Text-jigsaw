@@ -48,8 +48,8 @@ class MangaZeroPermutationClassifier(nn.Module):
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
-        if panel_count <= 1:
-            raise ValueError("panel_count must be greater than 1")
+        if panel_count < 3:
+            raise ValueError("panel_count must be at least 3")
         if solver_type not in {"visual", "text", "multimodal"}:
             raise ValueError("solver_type must be one of: visual, text, multimodal")
         if d_model % num_heads != 0:
@@ -60,10 +60,10 @@ class MangaZeroPermutationClassifier(nn.Module):
         self.use_visual = solver_type in {"visual", "multimodal"}
         self.use_text = solver_type in {"text", "multimodal"}
         self.use_layout = use_layout
-        self.num_classes = math.factorial(panel_count - 1)
+        self.num_classes = math.factorial(panel_count - 2)
 
         class_orders = torch.tensor(
-            [(0,) + tail for tail in itertools.permutations(range(1, panel_count))],
+            [(0,) + tail + (panel_count - 1,) for tail in itertools.permutations(range(1, panel_count - 1))],
             dtype=torch.long,
         )
         self.register_buffer("class_orders", class_orders, persistent=False)

@@ -24,15 +24,11 @@ from Solver.agent.mangazero_qwen_vl_autoregressive import (
 
 
 def validate_order(target_order: Tensor, panel_count: int | None = None) -> None:
-    """Validate a batch of full input-slot permutations."""
-    if target_order.ndim != 2:
-        raise ValueError(f"target_order must have shape [B,K], got {tuple(target_order.shape)}")
-    count = target_order.size(1)
-    if panel_count is not None and count != panel_count:
-        raise ValueError(f"expected panel_count={panel_count}, got {count}")
-    expected = torch.arange(count, device=target_order.device).expand_as(target_order)
-    if not torch.equal(torch.sort(target_order, dim=1).values, expected):
-        raise ValueError("target_order rows must be permutations of input panel indices")
+    """Validate endpoint-conditioned input-slot permutations via the puzzle."""
+    from Solver.puzzle import validate_order as validate_endpoints
+    validate_endpoints(target_order)
+    if panel_count is not None and target_order.size(1) != panel_count:
+        raise ValueError(f"expected panel_count={panel_count}, got {target_order.size(1)}")
 
 
 class NonAutoregressivePointerDecoder(nn.Module):
@@ -54,10 +50,12 @@ class NonAutoregressivePointerDecoder(nn.Module):
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
-        if panel_count <= 1:
-            raise ValueError("panel_count must be greater than one")
-        if d_model % num_heads != 0:
+        if panel_count < 3:
+            raise ValueError("panel_count must be at least 3")
+        if d_model <= 0 or num_heads <= 0 or d_model % num_heads != 0:
             raise ValueError("d_model must be divisible by num_heads")
+        if encoder_layers < 1 or decoder_layers < 1:
+            raise ValueError("encoder_layers and decoder_layers must be positive")
         self.panel_count = int(panel_count)
         self.d_model = int(d_model)
         if dropout < 0 or dropout >= 1:
@@ -105,7 +103,10 @@ class NonAutoregressivePointerDecoder(nn.Module):
         available = torch.ones(
             scores.size(0), self.panel_count, dtype=torch.bool, device=scores.device
         )
-        for position in range(self.panel_count):
+        selected[:, -1] = self.panel_count - 1
+        available[:, 0] = False
+        available[:, -1] = False
+        for position in range(1, self.panel_count - 1):
             masked = scores[:, position].masked_fill(~available, -torch.inf)
             selected[:, position] = masked.argmax(dim=-1)
             available.scatter_(1, selected[:, position : position + 1], False)
@@ -128,9 +129,14 @@ def nonautoregressive_ordering_loss(
     """
     if pointer_logits.ndim != 3:
         raise ValueError(f"pointer_logits must have shape [B,K,K], got {tuple(pointer_logits.shape)}")
-    validate_order(target_order, pointer_logits.size(1))
+    from Solver.puzzle import validate_order as validate_endpoints
+    validate_endpoints(target_order)
+    if target_order.shape != pointer_logits.shape[:2]:
+        raise ValueError("Target and logits shapes differ")
     if pointer_logits.size(2) != pointer_logits.size(1):
         raise ValueError("pointer_logits must be square in its two pointer dimensions")
+    pointer_logits = pointer_logits[:, 1:-1, 1:-1]
+    target_order = target_order[:, 1:-1] - 1
     row_loss = F.cross_entropy(
         pointer_logits.reshape(-1, pointer_logits.size(-1)), target_order.reshape(-1)
     )
@@ -172,8 +178,8 @@ class MangaZeroQwenVLNonAutoregressiveSolver(nn.Module):
         trust_remote_code: bool = True,
     ) -> None:
         super().__init__()
-        if panel_count <= 1:
-            raise ValueError("panel_count must be greater than one")
+        if panel_count < 3:
+            raise ValueError("panel_count must be at least 3")
         self.panel_count = int(panel_count)
         self.model_name = model_name
         self.decoder_dim = int(decoder_dim)
@@ -272,7 +278,8 @@ class MangaZeroQwenVLNonAutoregressiveSolver(nn.Module):
                        for index in range(self.panel_count)]
             prompt = (
                 f"There are {self.panel_count} comic panels in randomized input order. "
-                "Represent the original reading order using visual continuity and panel content."
+                f"Panel 0 is the known opening and panel {self.panel_count - 1} is the known ending. "
+                "Represent only the middle reading order using visual continuity and panel content."
             )
             if dialog_texts:
                 text_lines = [f"panel {i}: {str(text).strip()}" for i, text in enumerate(dialog_texts[batch_index]) if str(text).strip()]

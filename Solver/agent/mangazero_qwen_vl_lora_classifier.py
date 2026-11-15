@@ -44,14 +44,14 @@ class MangaZeroQwenVLLoRAClassifier(nn.Module):
         trust_remote_code: bool = True,
     ) -> None:
         super().__init__()
-        if panel_count <= 1:
-            raise ValueError("panel_count must be greater than 1")
+        if panel_count < 3:
+            raise ValueError("panel_count must be at least 3")
         self.panel_count = panel_count
         self.model_name = model_name
         self.num_classes = self._num_permutations(panel_count, max_permutation_classes)
 
         class_orders = torch.tensor(
-            [(0,) + tail for tail in itertools.permutations(range(1, panel_count))],
+            [(0,) + tail + (panel_count - 1,) for tail in itertools.permutations(range(1, panel_count - 1))],
             dtype=torch.long,
         )
         self.register_buffer("class_orders", class_orders, persistent=True)
@@ -155,10 +155,12 @@ class MangaZeroQwenVLLoRAClassifier(nn.Module):
         if attention_mask is None:
             pooled = hidden[:, -1]
         else:
-            indices = attention_mask.long().sum(dim=1).clamp(min=1) - 1
+            positions = torch.arange(attention_mask.size(1), device=hidden.device)
+            indices = positions.expand_as(attention_mask).masked_fill(~attention_mask.to(hidden.device).bool(), -1).max(dim=1).values
+            indices = indices.clamp(min=0)
             pooled = hidden[torch.arange(hidden.size(0), device=hidden.device), indices]
-        classifier_dtype = next(self.classifier.parameters()).dtype
-        return self.classifier(pooled.to(dtype=classifier_dtype))
+        parameter = next(self.classifier.parameters())
+        return self.classifier(pooled.to(device=parameter.device, dtype=parameter.dtype))
 
     def _call_processor(self, **forward_kwargs):
         """Call this processor across transformers versions.
@@ -296,6 +298,9 @@ class MangaZeroQwenVLLoRAClassifier(nn.Module):
             },
             "class_orders": self.class_orders.detach().cpu(),
         }
+        if not hasattr(self.backbone, "peft_config"):
+            state["backbone"] = {}
+            return state
         try:
             from peft import get_peft_model_state_dict
         except ImportError:
@@ -333,7 +338,7 @@ class MangaZeroQwenVLLoRAClassifier(nn.Module):
     @staticmethod
     def _num_permutations(panel_count: int, max_permutation_classes: int) -> int:
         total = 1
-        for value in range(2, panel_count):
+        for value in range(2, panel_count - 1):
             total *= value
         if total > max_permutation_classes:
             raise ValueError(
@@ -350,7 +355,7 @@ def build_ordering_prompt(panel_count: int, dialog_texts: list[str] | None = Non
         f"There are {panel_count} input panels numbered {panel_ids}. "
         "Use visual continuity, reading flow, characters, dialog bubbles, and scene transitions "
         "to infer the correct chronological reading order. "
-        "Panel 0 is the known opening panel. Keep it first and order only panels 1 onward. "
+        f"Panel 0 is the known opening and panel {panel_count - 1} is the known ending. Order only the middle panels. "
         "Do not generate the order; provide an internal representation for classification."
     )
     if dialog_texts:

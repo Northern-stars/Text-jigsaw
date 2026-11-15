@@ -37,7 +37,7 @@ class MangaZeroPanelOrderingEnv:
             split=split,
             image_size=image_size,
             use_layout=use_layout,
-            given_first=True,
+            given_endpoints=True,
         )
         self.rng = random.Random(seed)
         self.invalid_action_penalty = invalid_action_penalty
@@ -61,14 +61,16 @@ class MangaZeroPanelOrderingEnv:
 
         panel_count = int(self.current_sample["target_order"].numel())
         action = int(action)
-        invalid = action < 0 or action >= panel_count or action in self.selected_order
+        invalid = action < 0 or action >= panel_count - 1 or action in self.selected_order
         if invalid:
             self.done = True
             info = self._episode_info(invalid_action=action)
             return self._observation(), self.invalid_action_penalty, True, info
 
         self.selected_order.append(action)
-        self.done = len(self.selected_order) == panel_count
+        self.done = len(self.selected_order) == panel_count - 1
+        if self.done:
+            self.selected_order.append(panel_count - 1)
         if not self.done:
             return self._observation(), 0.0, False, self._episode_info()
 
@@ -83,6 +85,7 @@ class MangaZeroPanelOrderingEnv:
             raise RuntimeError("reset() must be called before requesting an observation")
         panel_count = int(self.current_sample["target_order"].numel())
         selected_mask = torch.zeros(panel_count, dtype=torch.bool)
+        selected_mask[-1] = True
         if self.selected_order:
             selected_mask[torch.tensor(self.selected_order, dtype=torch.long)] = True
         observation = {
@@ -92,7 +95,8 @@ class MangaZeroPanelOrderingEnv:
             "selected_order": torch.tensor(self.selected_order, dtype=torch.long),
             "selected_mask": selected_mask,
             "given_first_index": 0,
-            "task": "order_remaining_given_first",
+            "given_last_index": panel_count - 1,
+            "task": "order_middle_given_first_last",
             "done": self.done,
         }
         if "layout_features" in self.current_sample:
@@ -114,7 +118,7 @@ class MangaZeroPanelOrderingEnv:
             "position_accuracy": 0.0,
             "pairwise_accuracy": 0.0,
         }
-        remaining_pred, remaining_target = pred[1:], target[1:]
+        remaining_pred, remaining_target = (pred[1:-1] if complete else pred[1:]), target[1:-1]
         if remaining_pred:
             compare_len = min(len(remaining_pred), len(remaining_target))
             info["position_accuracy"] = sum(

@@ -1,5 +1,7 @@
 # Text-jigsaw
 
+Comic ordering now uses unified `Solver/train.py --solver NAME` and `Solver/test.py` with both GT endpoints fixed. See [Solver/README.md](Solver/README.md) for available models, training commands and checkpoint migration.
+
 面向文本/版面拼图（jigsaw）研究的数据集与求解器项目。项目把文本切割成拼图碎片，构造需要结合图像、OCR 文本和版面信息才能恢复正确顺序的任务，用于探索多模态模型、强化学习（DQN）和排序模型的求解能力。
 
 当前状态：实验性项目，尚未发布正式数据集（Not ready yet）。

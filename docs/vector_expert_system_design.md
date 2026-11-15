@@ -1,3 +1,5 @@
+> Implementation update: comic ordering now uses GT opening and ending panels and predicts only the middle. Use `Solver/train.py --solver NAME` and `Solver/test.py`; earlier per-model launch commands below are historical. See [Solver README](../Solver/README.md) for current commands and checkpoint compatibility.
+
 # Vector Expert 系统设计：固定 Hypernetwork 生成 LoRA，与专家 Feature Query
 
 日期：2026-11-06。本文是基于本地源码的设计方案，尚未实现或验证模型效果。

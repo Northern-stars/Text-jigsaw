@@ -1,3 +1,5 @@
+> Implementation update: comic ordering now uses GT opening and ending panels and predicts only the middle. Use `Solver/train.py --solver NAME` and `Solver/test.py`; earlier per-model launch commands below are historical. See [Solver README](../Solver/README.md) for current commands and checkpoint compatibility.
+
 ﻿# VLM Ordering Solver 接口文档
 
 本文档说明通用 VLM 排序接口 [Solver/agent/vlm_ordering_solver.py](../Solver/agent/vlm_ordering_solver.py) 提供的抽象，并在后半部分给出 Qwen2.5-VL 具体实现 [Solver/agent/qwen_vl_ordering_solver.py](../Solver/agent/qwen_vl_ordering_solver.py) 对每个接口的实现逻辑。

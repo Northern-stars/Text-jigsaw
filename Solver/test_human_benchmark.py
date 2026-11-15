@@ -89,7 +89,7 @@ class HumanBenchmarkTests(unittest.TestCase):
                         self.assertEqual(display[0], target[0])
                         self.assertEqual(sorted(display), list(range(4)))
                         self.assertTrue(render.call_args.kwargs["given_first"])
-                        answer = [display.index(index) + 1 for index in target[1:]]
+                        answer = [display.index(index) + 1 for index in target[1:-1]]
                         if outcome == "quit":
                             return "q"
                         if outcome == "incorrect":
@@ -104,12 +104,12 @@ class HumanBenchmarkTests(unittest.TestCase):
                     self.assertEqual(records, [])
                     continue
                 record = json.loads(records[0])
-                self.assertEqual(record["task"], "order_remaining_given_first")
-                self.assertEqual(record["given_display_order"], [1])
+                self.assertEqual(record["task"], "order_middle_given_first_last")
+                self.assertEqual(record["given_display_order"], [1, 4])
                 self.assertEqual(record["correct"], outcome == "correct")
                 display = record["displayed_input_indices"]
-                self.assertEqual([display[i - 1] for i in record["reference_display_order"]], target[1:])
-                self.assertEqual(sorted(record["answer"]), [2, 3, 4])
+                self.assertEqual([display[i - 1] for i in record["reference_display_order"]], target[1:-1])
+                self.assertEqual(sorted(record["answer"]), [2, 3])
 
 
 if __name__ == "__main__":

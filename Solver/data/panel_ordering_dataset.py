@@ -13,6 +13,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 from Solver.data.given_start import with_given_start
+from Solver.puzzle import with_given_endpoints
 
 
 @dataclass(frozen=True)
@@ -47,12 +48,14 @@ class MangaZeroPanelOrderingDataset(Dataset):
         allow_empty: bool = False,
         manifest_path: str | Path | None = None,
         given_first: bool = False,
+        given_endpoints: bool = False,
     ) -> None:
         self.dataset_dir = Path(dataset_dir)
         self.split = self._normalize_split(split)
         self.image_size = image_size
         self.use_layout = use_layout
         self.given_first = given_first
+        self.given_endpoints = given_endpoints
         self.manifest_path = Path(manifest_path) if manifest_path is not None else None
         self.samples = self._load_samples()
         if not self.samples and not allow_empty:
@@ -90,6 +93,8 @@ class MangaZeroPanelOrderingDataset(Dataset):
         }
         if self.use_layout:
             item["layout_features"] = torch.tensor(layout_features, dtype=torch.float32)
+        if self.given_endpoints:
+            return with_given_endpoints(item)
         return with_given_start(item) if self.given_first else item
 
     def _load_samples(self) -> list[MangaZeroPanelSample]:
@@ -260,7 +265,8 @@ def load_panel_ordering_splits(
     dataset_dir: str | Path,
     image_size: tuple[int, int] | None = None,
     use_layout: bool = True,
-    given_first: bool = True,
+    given_first: bool = False,
+    given_endpoints: bool = True,
 ) -> tuple[MangaZeroPanelOrderingDataset, MangaZeroPanelOrderingDataset, MangaZeroPanelOrderingDataset]:
     """Load train, validation, and test sets recorded in the dataset manifests."""
     return tuple(
@@ -271,6 +277,7 @@ def load_panel_ordering_splits(
             use_layout=use_layout,
             allow_empty=split != "train",
             given_first=given_first,
+            given_endpoints=given_endpoints,
         )
         for split in ("train", "val", "test")
     )
@@ -312,4 +319,6 @@ def collate_panel_ordering_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
         result["given_first_index"] = torch.tensor([item["given_first_index"] for item in batch])
         result["task"] = [item["task"] for item in batch]
         result["input_panel_indices"] = torch.stack([item["input_panel_indices"] for item in batch])
+    if "given_last_index" in batch[0]:
+        result["given_last_index"] = torch.tensor([item["given_last_index"] for item in batch])
     return result

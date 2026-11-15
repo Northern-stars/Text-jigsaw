@@ -26,7 +26,7 @@ class NonAutoregressiveDecoderTests(unittest.TestCase):
 
     def test_two_direction_loss_is_differentiable(self):
         logits = torch.randn(2, 4, 4, requires_grad=True)
-        target = torch.tensor([[2, 0, 3, 1], [1, 3, 0, 2]])
+        target = torch.tensor([[0, 2, 1, 3], [0, 1, 2, 3]])
         loss = nonautoregressive_ordering_loss(logits, target)
         self.assertTrue(torch.isfinite(loss))
         loss.backward()

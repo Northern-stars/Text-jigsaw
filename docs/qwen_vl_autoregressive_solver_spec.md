@@ -1,3 +1,5 @@
+> Implementation update: comic ordering now uses GT opening and ending panels and predicts only the middle. Use `Solver/train.py --solver NAME` and `Solver/test.py`; earlier per-model launch commands below are historical. See [Solver README](../Solver/README.md) for current commands and checkpoint compatibility.
+
 # Qwen VL 自回归排序求解器方案
 
 ## 1. 任务定义

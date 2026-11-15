@@ -28,16 +28,16 @@ def build_permutation_bank(
     max_permutations: int | None = 1000,
     seed: int = 0,
 ) -> list[tuple[int, ...]]:
-    """Build a deterministic candidate bank without materializing all (K-1)! continuation orders."""
-    if panel_count <= 1:
-        raise ValueError("panel_count must be greater than 1")
+    """Build a deterministic candidate bank without materializing all (K-2)! middle orders."""
+    if panel_count < 3:
+        raise ValueError("panel_count must be at least 3")
 
-    total = math.factorial(panel_count - 1)
+    total = math.factorial(panel_count - 2)
     limit = total if max_permutations is None else int(max_permutations)
     if limit <= 0:
         raise ValueError("max_permutations must be positive or None")
     if limit >= total:
-        return [(0,) + tail for tail in itertools.permutations(range(1, panel_count))]
+        return [(0,) + tail + (panel_count - 1,) for tail in itertools.permutations(range(1, panel_count - 1))]
 
     rng = random.Random(seed)
     selected: list[tuple[int, ...]] = []
@@ -48,7 +48,7 @@ def build_permutation_bank(
     selected.append(identity)
     seen.add(identity)
     while len(selected) < limit:
-        candidate = (0,) + tuple(rng.sample(range(1, panel_count), panel_count - 1))
+        candidate = (0,) + tuple(rng.sample(range(1, panel_count - 1), panel_count - 2)) + (panel_count - 1,)
         if candidate not in seen:
             seen.add(candidate)
             selected.append(candidate)
@@ -110,8 +110,8 @@ class MangaZeroJigsawSolver(nn.Module):
         dropout: float = 0.5,
     ) -> None:
         super().__init__()
-        if panel_count <= 1:
-            raise ValueError("panel_count must be greater than 1")
+        if panel_count < 3:
+            raise ValueError("panel_count must be at least 3")
         if hidden_dim <= 0:
             raise ValueError("hidden_dim must be positive")
 
@@ -190,7 +190,7 @@ class MangaZeroJigsawSolver(nn.Module):
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
         bank = state_dict.get(prefix + "permutation_bank")
         if bank is not None and not torch.equal(bank.cpu(), self.permutation_bank.cpu()):
-            raise ValueError("Checkpoint permutation bank does not match the given-start task and seed; retrain the classifier.")
+            raise ValueError("Checkpoint permutation bank does not match the endpoint task and seed; retrain the classifier.")
         super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     @torch.no_grad()
