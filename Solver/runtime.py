@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 
 from Solver.data.panel_ordering_dataset import collate_panel_ordering_batch
 from Solver.puzzle import TASK, OrderingPuzzle, ordering_metrics
+from tqdm import tqdm
 
 
 def seed_everything(seed):
@@ -38,7 +39,7 @@ def train_epoch(solver, loader, optimizer, args):
     # Normalize each accumulation window by its actual sample count, including
     # the last incomplete batch/window, so gradients match one larger batch.
     window_samples = 0
-    for index, batch in enumerate(loader, 1):
+    for index, batch in enumerate(tqdm(loader), 1):
         batch = move_batch(solver.prepare_training_batch(batch), args.device)
         samples = batch["panel_images"].size(0)
         loss = puzzle.training_loss(batch)

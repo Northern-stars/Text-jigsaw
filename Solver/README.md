@@ -12,12 +12,12 @@ model-specific losses or decoding algorithms.
   augmentation and checkpoint policies; `agent/` contains the model architectures.
 - `runtime.py`: one gradient-accumulation loop, evaluation and checkpoint IO.
 - `cli.py`, `train.py`, `test.py`: shared command-line configuration and entry points.
-- `utils.py`: formatting helpers used by research experiments.
+- `utils.py`: compatibility helpers used by research experiments.
 
-The separate `train_rl.py` implements the unrelated spatial text-jigsaw DQN
- task and is retained. Files named `test_*` are regression tests, not model
- evaluation entry points. Old per-model comic ordering train/test launchers and
- their configs have been removed; their model architectures remain available.
+The separate `train_rl.py` implements the spatial text-jigsaw DQN task.
+Files named `test_*` are regression tests, not model evaluation entry points.
+Old per-model comic ordering train/test launchers and their configs have been
+removed; their model architectures remain available.
 
 ## Puzzle contract
 
@@ -56,14 +56,50 @@ and the RQ ordering code use the same endpoint contract.
 
 ## Train and test
 
+The entry points automatically load
+[`config/Solver/train.json`](../config/Solver/train.json) and
+[`config/Solver/test.json`](../config/Solver/test.json). Paths in the configs
+are resolved from the working directory; run the commands from the repository
+root. CLI arguments override JSON defaults. Use `--config path/to/config.json`
+to select a different config file.
+
+| Setting | Training default | Test default |
+| --- | --- | --- |
+| `solver` | `qwen_vl_nonautoregressive` | restored from checkpoint |
+| `panel_count` | 6, including both given endpoints | restored from checkpoint |
+| `dataset_dir` | required via CLI or config | required via CLI or config |
+| `checkpoint` | use `resume` to continue training | required via CLI or config |
+| `epochs` / `grad_accum_steps` | 3 / 8 | not applicable |
+| `batch_size` / `num_workers` | 1 / 0 | 1 / 0 |
+| `image_width` / `image_height` | 224 / 224 | restored from checkpoint |
+| `lr_backbone` / `lr_decoder` | 0.0001 / 0.001 | not applicable |
+| `grad_clip_norm` / `weight_decay` | 1.0 / 0.0 | not applicable |
+| `device` / `seed` | auto CUDA/CPU / 42 | auto CUDA/CPU / 42 |
+| `save_dir` / `save_every` | `Solver/checkpoints/<solver>` / each epoch | not applicable |
+| `split` / `output_json` | final test after validation selection | `test` / no output file |
+
+`null` keeps the CLI's own default. Required paths such as `dataset_dir` and
+`checkpoint` must still be supplied. Model-related fields are deliberately
+`null`, and `model_options` defaults to `{}`, so selecting a different solver
+does not inherit another architecture's options. For the default NAR solver,
+constructor defaults are Qwen2.5-VL-3B-Instruct with LoRA, bfloat16, decoder
+dimension 256, 2 set-encoder layers, 1 parallel decoder layer, 8 attention
+heads, dropout 0.1 and column loss weight 1.0. Quantization is disabled.
+
+Start with the default non-autoregressive solver using only the dataset path:
+
+```sh
+python Solver/train.py --dataset-dir Data/comix/6panel-ordering
+```
+
 Train the non-autoregressive solver from the repository root:
 
 ```sh
 python Solver/train.py --solver qwen_vl_nonautoregressive --dataset-dir Data/comix/6panel-ordering --panel-count 6 --epochs 3 --batch-size 1 --grad-accum-steps 8 --save-dir Solver/checkpoints/qwen_nar
 ```
 
-Use `--no-lora` for a frozen backbone feasibility run. Use `--load-in-4bit
---device-map auto` for QLoRA on a compatible CUDA/bitsandbytes installation.
+Use `--no-lora` for a frozen backbone feasibility run. Use
+`--load-in-4bit --device-map auto` for QLoRA on a compatible CUDA/bitsandbytes installation.
 Model constructor settings beyond the common CLI flags go into `--model-options`
 as a JSON object (or a JSON object under `model_options` in `--config`). For
 example, a lightweight text-only baseline:
@@ -79,6 +115,41 @@ Unsupported constructor keys fail explicitly. CLI values override JSON defaults.
 Common flags include `--model-name`, `--decoder-dim`, `--decoder-layers`,
 `--encoder-layers`, `--num-heads`, `--torch-dtype`, `--use-layout`,
 `--lr-backbone` and `--lr-decoder` (`--lr` alias).
+
+For NAR-specific settings, copy `config/Solver/train.json` to a custom file
+and edit its defaults, for example:
+
+```json
+{
+  "defaults": {
+    "solver": "qwen_vl_nonautoregressive",
+    "dataset_dir": "Data/comix/6panel-ordering",
+    "panel_count": 6,
+    "model_name": "Qwen/Qwen2.5-VL-7B-Instruct",
+    "epochs": 5,
+    "model_options": {
+      "encoder_layers": 2,
+      "decoder_layers": 1,
+      "decoder_dim": 256,
+      "num_heads": 8,
+      "column_loss_weight": 1.0,
+      "max_pixels": 401408
+    }
+  }
+}
+```
+
+```sh
+python Solver/train.py --config config/Solver/train_nar_local.json --epochs 10
+```
+
+This example assumes the custom JSON was saved as `train_nar_local.json`.
+Top-level model flags take precedence over matching keys in `model_options`.
+For testing, leave architecture fields such as `model_name`, `decoder_dim`,
+`encoder_layers`, `use_lora` and `use_layout` as `null`, and `model_options` as
+`{}`; they are restored from the checkpoint. `torch_dtype`, `device_map` and
+`load_in_4bit` may be overridden for evaluation. The image dimensions shown in
+the shared test config are replaced by the checkpoint's training dimensions.
 
 Evaluate a checkpoint; architecture and image dimensions are restored from it:
 

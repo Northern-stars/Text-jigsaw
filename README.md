@@ -42,8 +42,10 @@ Text-jigsaw/
 │   │   └── mangazero_permutation_classifier.py # panel 排序全排列分类模型
 │   ├── model_code/fen_model.py    # FEN 系列视觉特征提取器
 │   ├── train_rl.py                # DQN 训练入口
-│   ├── train_mangazero_panel_ordering.py      # set2seq 训练入口
-│   ├── train_mangazero_permutation_classifier.py # 分类器训练入口
+│   ├── puzzle.py                  # 给定 GT 首尾、排序中间 panel 的共享任务
+│   ├── solvers/                   # solver 注册表、各方案的训练与推理接口
+│   ├── train.py                    # ordering 统一训练入口（--solver）
+│   ├── test.py                     # ordering 统一测试入口
 │   ├── test_*.py                  # 对应冒烟/单元测试
 │   └── visualize_dataset_sample.py # 数据集样本可视化
 ├── docs/                            # 技术文档
@@ -68,8 +70,24 @@ Text-jigsaw/
 
 - `TextJigsawEnv`：3x3 文本拼图环境，固定中心块，动作是交换两个非中心位置，奖励由正确相邻对、正确位置和完成奖励组成。
 - DQN solver：支持纯视觉、纯文本、多模态三种输入，统一入口为 `python Solver/train_rl.py`。
-- MangaZero panel 排序 solver：提供 set-to-sequence pointer 模型和全排列分类模型两个方案，分别用 `train_mangazero_panel_ordering.py` 与 `train_mangazero_permutation_classifier.py` 训练。
+- Panel 排序 solver：统一使用 `Solver/train.py` 和 `Solver/test.py`，通过 `--solver` 选择 Qwen-VL 非自回归、自回归、分类、生成式、vector expert，以及 set2seq、permutation、Jigsaw、Made2Order 共 9 种方案。
+- Puzzle 给定 GT 首 panel 和末 panel，分别固定到输入槽位 `0`、`K-1`；只训练、预测和评价中间 `K-2` 个 panel，`panel_count` 包含首尾。
 - 所有 panel-ordering 训练入口共用 `Solver/data/panel_ordering_dataset.py`，按 ordering manifest 的 `train` / `val` / `test` split 读取样本；数据集需提供对应 split 清单或带 `split` 字段的合并 manifest。
+
+默认配置分别为 [config/Solver/train.json](config/Solver/train.json) 和 [config/Solver/test.json](config/Solver/test.json)，启动时自动加载，命令行参数覆盖 JSON。训练默认选择新的 `qwen_vl_nonautoregressive`，6 个 panel、3 个 epoch、batch size 1、梯度累积 8 步；测试从 checkpoint 恢复 solver 和模型架构。
+
+```bash
+# 非自回归 Qwen-VL：可省略 --solver 和 --panel-count，使用默认配置
+python Solver/train.py --dataset-dir Data/comix/6panel-ordering
+
+# 显式选择 solver；日志和 checkpoint 默认保存到 Solver/checkpoints/<solver>/
+python Solver/train.py --solver qwen_vl_nonautoregressive --dataset-dir Data/comix/6panel-ordering --panel-count 6 --epochs 3
+
+# 测试：自动恢复训练时的架构、panel 数量和图像尺寸
+python Solver/test.py --dataset-dir Data/comix/6panel-ordering --checkpoint Solver/checkpoints/qwen_vl_nonautoregressive/best.pt --split test
+```
+
+配置中的 `dataset_dir`、`checkpoint` 为 `null`，需通过命令行或自定义配置提供；模型相关的 `null` 参数沿用各 solver 的构造默认值，`device: null` 自动选择 CUDA/CPU。完整 solver 列表、模型参数、QLoRA 和恢复训练用法见 [Solver/README.md](Solver/README.md)。
 
 ## 使用提示
 
@@ -106,7 +124,7 @@ python comix/download_raw.py --dataset-name emanuelevivoli/comix-v0_1-pages --ma
 python comix/build_ordering_dataset.py --raw-dir Data/comix/raw --output-dir Data/comix/6panel-ordering --disable-ocr
 ```
 
-COMIX 链路实现集中在 `comix/comix_pipeline.py`；`stream_comix.py` 是一体化入口，直接转发到 `comix_pipeline.main()`，不再重复实现下载/构建逻辑。它复用 `Mangazero/build_dataset.py` 的 `write_puzzle_directory`、`pad_image`、`clamp_bbox` 等逻辑，输出与 Mangazero 相同格式的 `manifest.jsonl` + `sample.json` + `panels_padded/`，可以直接喂给现有的 `Solver/train_mangazero_panel_ordering.py` 和 `Solver/train_mangazero_permutation_classifier.py`。
+COMIX 链路实现集中在 `comix/comix_pipeline.py`；`stream_comix.py` 是一体化入口，直接转发到 `comix_pipeline.main()`，不再重复实现下载/构建逻辑。它复用 `Mangazero/build_dataset.py` 的 `write_puzzle_directory`、`pad_image`、`clamp_bbox` 等逻辑，输出与 Mangazero 相同格式的 `manifest.jsonl` + `sample.json` + `panels_padded/`，可以直接交给统一入口 `Solver/train.py --solver <方案名>`。
 
 官方 pages 数据集字段为 `page["json"]`（元数据，含 `book_id/page_number/page_class/detections`）和 `page["jpg"]`（PIL 页面图）。脚本会保存 `metadata` 与页面图，并从 `metadata["detections"]["fasterrcnn"]["panels"]` 读取 panel 框、从 `textboxes`/`characters` 按重叠归属到 panel，产出可与 Mangazero 训练入口直接对接的 ordering 数据集。
 
@@ -124,10 +142,10 @@ Dependencies for this solver: `torch`, `einops`. No upstream dataset deps
 Train on the existing MangaZero panel-ordering dataset:
 
 ```bash
-python Solver/train_made2order_panel_ordering.py \
+python Solver/train.py --solver made2order \
   --dataset-dir Mangazero/ordering_dataset \
-  --panel-count 6 --epoch 10 --batch-size 8 \
-  --image-width 224 --image-height 224 --patch-size 16
+  --panel-count 6 --epochs 10 --batch-size 8 \
+  --image-width 224 --image-height 224 --model-options '{"patch_size":16}'
 ```
 
 Quick smoke run on a dataset slice:
@@ -139,9 +157,8 @@ python Solver/smoke_made2order.py --max-samples 16 --steps 2 --device cpu
 Evaluate a checkpoint:
 
 ```bash
-python Solver/test_made2order_panel_ordering.py \
+python Solver/test.py --solver made2order \
   --dataset-dir Mangazero/ordering_dataset \
-  --panel-count 6 \
-  --checkpoint Solver/checkpoints_made2order/last.pt \
+  --checkpoint Solver/checkpoints/made2order/last.pt \
   --split test
 ```

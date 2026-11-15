@@ -1,1 +1,27 @@
-{"defaults": {}}
+{
+  "defaults": {
+    "solver": null,
+    "dataset_dir": null,
+    "panel_count": null,
+    "model_options": {},
+    "model_name": null,
+    "decoder_dim": null,
+    "decoder_layers": null,
+    "encoder_layers": null,
+    "num_heads": null,
+    "torch_dtype": null,
+    "device_map": null,
+    "load_in_4bit": null,
+    "use_lora": null,
+    "use_layout": null,
+    "batch_size": 1,
+    "num_workers": 0,
+    "image_width": 224,
+    "image_height": 224,
+    "device": null,
+    "seed": 42,
+    "checkpoint": null,
+    "split": "test",
+    "output_json": null
+  }
+}

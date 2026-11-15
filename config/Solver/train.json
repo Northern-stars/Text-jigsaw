@@ -1,1 +1,33 @@
-{"defaults": {}}
+{
+  "defaults": {
+    "solver": "qwen_vl_nonautoregressive",
+    "dataset_dir": null,
+    "panel_count": 6,
+    "model_options": {},
+    "model_name": null,
+    "decoder_dim": null,
+    "decoder_layers": null,
+    "encoder_layers": null,
+    "num_heads": null,
+    "torch_dtype": null,
+    "device_map": null,
+    "load_in_4bit": null,
+    "use_lora": null,
+    "use_layout": null,
+    "batch_size": 4,
+    "num_workers": 0,
+    "image_width": 224,
+    "image_height": 224,
+    "device": null,
+    "seed": 42,
+    "epochs": 10,
+    "grad_accum_steps": 8,
+    "grad_clip_norm": 1.0,
+    "lr_backbone": 0.0001,
+    "lr_decoder": 0.001,
+    "weight_decay": 0.0,
+    "save_dir": null,
+    "resume": null,
+    "save_every": 10
+  }
+}
