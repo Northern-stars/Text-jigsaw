@@ -4,8 +4,12 @@
 ordering head based on the non-autoregressive sentence-ordering implementation
 under `third_party/nonautoregressive-sentence-ordering-main`.
 
-The Qwen2.5-VL backbone receives all panels in one multimodal message. The
-`<|image_pad|>` token runs are mean-pooled into one vector per input panel,
+The Qwen2.5-VL backbone receives all panels in one multimodal message. The task
+description and all available OCR dialogue appear before the images, with
+explicit input-slot labels before each image. This lets the causal language
+layers' image-token states attend to the task and every panel's supplied text.
+OCR IDs refer to shuffled input slots; they do not expose GT middle positions.
+The `<|image_pad|>` token runs are mean-pooled into one vector per input panel,
 projected into decoder space, and contextualised by a Transformer set encoder.
 The decoder then receives K position queries at once and cross-attends to the
 set memory. Its output is a `[batch, reading_position, input_panel]` pointer

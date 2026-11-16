@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Panel ordering 标签审查</title>
+<style>
+body{font:16px/1.5 system-ui,sans-serif;color:#202938;background:#f3f5f8;margin:0}
+header{position:sticky;top:0;background:#fff;border-bottom:1px solid #ccd2dc;padding:12px 24px;z-index:2}
+main{max-width:1600px;margin:auto;padding:20px}button,select,input,textarea{font:inherit;padding:6px;margin:4px;border:1px solid #aeb9c7;border-radius:5px}
+button{cursor:pointer;background:#fff}button:disabled{opacity:.4}h1{font-size:21px;margin:0 0 6px}h2{font-size:19px}
+.strip{display:flex;gap:14px;overflow-x:auto;align-items:flex-start;padding-bottom:14px}.panel{background:white;border:1px solid #ccd2dc;border-radius:8px;padding:12px;flex-shrink:0;width:var(--panel-width)}
+.panel img{display:block;max-width:100%;height:auto;margin:8px 0}.role{color:#0c6551;font-weight:700}.field{white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0}.label{font-size:13px;color:#526072}
+details{margin:8px 0}summary{cursor:pointer}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}.review{padding:16px;background:#fff;border-radius:8px;margin:20px 0}.review label{display:block;margin:6px}textarea{width:min(95%,800px);min-height:70px}.muted{color:#526072}#message{color:#985100}
+dialog{max-width:95vw;max-height:94vh}dialog img{max-width:85vw;max-height:80vh;object-fit:contain}
+</style>
+<header>
+<h1>Panel ordering 标签审查</h1>
+<button id="prev">上一题</button><select id="jump" aria-label="选择题目"></select><button id="next">下一题</button>
+<button id="export">导出判定 JSONL</button><button id="import">导入判定</button><input id="import-file" type="file" accept=".jsonl,.json" hidden>
+<span id="progress"></span><span id="message" role="status"></span>
+</header>
+<main>
+<p class="muted">所有编号均从 0 开始。正确顺序按数据集标签还原，供人工判断；图片为加载器实际输出的训练尺寸。点击图片可放大，展开原图可检查缩放丢失的细节。附加文字仅供审查，实际传给 solver 的文字单独标注。</p>
+<div id="meta"></div>
+<h2>已知起点 START 与终点 END</h2><div id="endpoints" class="strip"></div>
+<h2>输入顺序（首尾固定，中间打乱）</h2><div id="input" class="strip"></div>
+<h2>按 GT 标签还原的正确顺序 →</h2><div id="correct" class="strip"></div>
+<details><summary>索引映射及原始标签</summary><pre id="mapping"></pre></details>
+<section class="review">
+<strong>人工判定</strong>
+<label>标签是否正确 <select id="verdict"><option value="">未判定</option><option value="correct">正确</option><option value="incorrect">错误</option><option value="uncertain">不确定 / 多种顺序合理</option></select></label>
+<label>建议正确顺序（可选，填写全部输入槽位编号；若首尾标签错误，也可调整首尾）<input id="suggested" placeholder="例如 0 3 1 4 2 5" size="35"></label>
+<label>备注<br><textarea id="notes" placeholder="例如：起点选错、台词不对应、相邻格可互换……"></textarea></label>
+<p class="muted">判定会尽量保存在当前浏览器，请导出 JSONL 留存；移动 HTML 或更换浏览器后可导入继续。</p>
+</section>
+</main>
+<dialog id="zoom"><button id="close-zoom">关闭</button><img id="zoom-image" alt="放大 panel"></dialog>
+<script id="audit-data" type="application/json">__AUDIT_PAYLOAD__</script>
+<script>
+"use strict";
+const data=JSON.parse(document.getElementById('audit-data').textContent), samples=data.samples;
+const $=id=>document.getElementById(id);
+const storageKey='ordering-audit:'+JSON.stringify([data.settings,samples.map(s=>[s.review_id,s.target_order])]);
+let reviews={},current=0;
+try{reviews=JSON.parse(localStorage.getItem(storageKey)||'{}')}catch(e){$('message').textContent=' 浏览器本地保存不可用，请导出判定。'}
+function write(){try{localStorage.setItem(storageKey,JSON.stringify(reviews))}catch(e){$('message').textContent=' 本地保存失败，请导出判定。'}}
+function add(parent,tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;parent.append(node);return node}
+function zoom(uri){$('zoom-image').src=uri;$('zoom').showModal()}
+function card(panel,rank){
+ const node=document.createElement('article');node.className='panel';node.style.setProperty('--panel-width',Math.max(224,panel.training_size[0])+'px');
+ add(node,'strong',(rank===undefined?'':`阅读位置 ${rank} · `)+`输入槽位 ${panel.slot}`);
+ add(node,'div',panel.role+' · 原始输入索引 '+panel.source_index,'role');
+ const img=add(node,'img');img.src=panel.image_uri;img.alt=`输入槽位 ${panel.slot}`;img.onclick=()=>zoom(panel.image_uri);
+ add(node,'div',`训练 ${panel.training_size.join('×')} / 原图 ${panel.original_size.join('×')}`,'label');
+ add(node,'div','solver dialog_text: '+(panel.model_dialog_text||'（空）'),'field');
+ for(const [key,value] of Object.entries(panel.texts)){if(key==='dialog_text')continue;add(node,'div',key+': '+(typeof value==='string'?value:JSON.stringify(value,null,2)),'field')}
+ if(panel.original_uri){const d=add(node,'details');add(d,'summary','查看原图');const original=add(d,'img');original.loading='lazy';original.src=panel.original_uri;original.alt='原始 panel';original.onclick=()=>zoom(panel.original_uri)}
+ const detail=add(node,'details');add(detail,'summary','来源与完整 panel 元数据');add(detail,'pre',panel.image_path+'\n'+JSON.stringify(panel.metadata,null,2));return node;
+}
+function render(){
+ const s=samples[current], saved=reviews[s.review_id]||{};
+ $('jump').value=current;$('prev').disabled=current===0;$('next').disabled=current===samples.length-1;
+ $('meta').textContent=`${current+1}/${samples.length} · ${s.sequence_id} · split=${s.split} · index=${s.dataset_index} · work=${s.work_id||s.manga_id} · shuffle=${s.shuffle_mode} · seed=${s.sample_shuffle_seed}`;
+ for(const id of ['endpoints','input','correct'])$(id).replaceChildren();
+ for(const slot of [0,s.panels.length-1])$('endpoints').append(card(s.panels[slot]));
+ s.panels.forEach(p=>$('input').append(card(p)));
+ s.target_order.forEach((slot,rank)=>$('correct').append(card(s.panels[slot],rank)));
+ $('mapping').textContent=JSON.stringify({raw_target_order:s.raw_target_order,endpoint_dataset_target_order:s.endpoint_dataset_target_order,endpoint_dataset_source_indices:s.endpoint_dataset_source_indices,input_source_indices:s.input_source_indices,target_order:s.target_order},null,2);
+ $('verdict').value=saved.verdict||'';$('notes').value=saved.notes||'';$('suggested').value=saved.suggested_text||'';
+ updateProgress();
+}
+function updateProgress(){$('progress').textContent=` 已判定 ${samples.filter(s=>reviews[s.review_id]?.verdict).length}/${samples.length}`}
+function save(){const s=samples[current];reviews[s.review_id]={verdict:$('verdict').value,notes:$('notes').value,suggested_text:$('suggested').value,updated_at:new Date().toISOString()};write();updateProgress()}
+function move(index){save();current=index;render()}
+samples.forEach((s,i)=>{const o=add($('jump'),'option',`${i+1}. ${s.sequence_id}`);o.value=i});
+$('prev').onclick=()=>move(current-1);$('next').onclick=()=>move(current+1);$('jump').onchange=()=>move(Number($('jump').value));
+for(const id of ['verdict','notes','suggested'])$(id).addEventListener('input',save);
+$('close-zoom').onclick=()=>$('zoom').close();
+$('export').onclick=()=>{
+ save();const result=[];
+ for(const s of samples){const r=reviews[s.review_id]||{},text=(r.suggested_text||'').trim();let proposed=null;
+  if(text){proposed=text.split(/[\s,，]+/).map(Number);const k=s.panels.length;
+   if(proposed.length!==k||new Set(proposed).size!==k||proposed.some(n=>!Number.isInteger(n)||n<0||n>=k)){$('message').textContent=` 第 ${samples.indexOf(s)+1} 题建议顺序无效：需包含所有输入槽位且不重复。`;return}}
+  result.push({schema_version:1,settings:data.settings,review_id:s.review_id,sequence_id:s.sequence_id,dataset_index:s.dataset_index,split:s.split,target_order:s.target_order,input_source_indices:s.input_source_indices,...r,suggested_order:proposed});
+ }
+ const url=URL.createObjectURL(new Blob([result.map(r=>JSON.stringify(r)).join('\n')+'\n'],{type:'application/x-ndjson;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='ordering_label_reviews.jsonl';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);$('message').textContent=' 判定已导出。';
+};
+$('import').onclick=()=>$('import-file').click();
+$('import-file').onchange=async()=>{
+ try{const file=$('import-file').files[0];if(!file)return;const rows=(await file.text()).split(/\r?\n/).filter(l=>l.trim()).map(JSON.parse);let n=0;
+  for(const r of rows){const s=samples.find(s=>s.review_id===r.review_id);if(!s||JSON.stringify(s.target_order)!==JSON.stringify(r.target_order)||JSON.stringify(s.input_source_indices)!==JSON.stringify(r.input_source_indices)||JSON.stringify(r.settings)!==JSON.stringify(data.settings))continue;
+   if(!['','correct','incorrect','uncertain'].includes(r.verdict||''))continue;reviews[s.review_id]=r;n++}
+  write();render();$('message').textContent=` 已导入 ${n} 条匹配的判定。`;
+ }catch(e){$('message').textContent=' 导入失败：'+e.message}finally{$('import-file').value=''}
+};
+render();
+</script>
+</html>

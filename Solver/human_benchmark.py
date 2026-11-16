@@ -24,6 +24,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from Solver.data.panel_ordering_dataset import MangaZeroPanelOrderingDataset
+from Solver.data.source_provenance import raw_source_location
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -31,6 +32,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         description="Give the first comic panel and score human ordering of the remaining panels."
     )
     parser.add_argument("--dataset-dir", type=Path, required=True)
+    parser.add_argument("--raw-dir", type=Path, default=None,
+                        help="Optional original MangaZero raw directory; otherwise use dataset metadata or nearby raw directories.")
     parser.add_argument("--split", choices=("train", "val", "test", "all"), default="test")
     parser.add_argument("--num-questions", type=int, default=20)
     parser.add_argument("--image-width", type=int, default=224)
@@ -252,6 +255,40 @@ def correct_display_order(target_order: Sequence[int], displayed_indices: Sequen
     return [input_to_display[index] for index in target_order]
 
 
+def print_puzzle_source(dataset, sample: dict, sample_index: int,
+                        dataset_dir: Path, displayed_indices: Sequence[int], raw_dir: Path | None = None) -> None:
+    """Show provenance without revealing GT order in the question display."""
+    dataset_dir = Path(dataset_dir).resolve()
+    source_dir = dataset_dir
+    # Experiment manifests can point outside the selected dataset directory.
+    if hasattr(dataset, "samples"):
+        source_dir = Path(dataset.samples[sample_index].source_dir or dataset_dir).resolve()
+    dataset_name = sample.get("dataset") or source_dir.name
+    print(f"Source: dataset={dataset_name} | puzzle={sample['sequence_id']} | "
+          f"split={sample.get('split') or getattr(dataset, 'split', 'unknown')} | index={sample_index}")
+    print(f"Dataset path: {dataset_dir}")
+    if source_dir != dataset_dir:
+        print(f"Source dataset path: {source_dir}")
+    identifiers = [f"{key}={sample[key]}" for key in
+                   ("work_id", "manga_id", "chapter_id", "page_key", "window_id") if sample.get(key)]
+    if identifiers:
+        print("Source IDs: " + " | ".join(identifiers))
+    seen = set()
+    for panel_index in displayed_indices:
+        panel = sample["panels"][panel_index]
+        location, recorded = raw_source_location(panel, source_dir, raw_dir)
+        source_key = str(location) if location is not None else recorded
+        if source_key in seen:
+            continue
+        seen.add(source_key)
+        if location is not None:
+            print(f"Raw source: id={location.name} | path={location}")
+        elif recorded:
+            print(f"Source image ID: {recorded} (local raw ID unavailable; specify --raw-dir)")
+        else:
+            print("Raw source: unavailable (no source metadata)")
+
+
 def run_benchmark(args: argparse.Namespace) -> tuple[int, int]:
     if args.num_questions <= 0:
         raise ValueError("--num-questions must be positive")
@@ -312,6 +349,8 @@ def run_benchmark(args: argparse.Namespace) -> tuple[int, int]:
             puzzle_image.save(image_path)
 
         print(f"Question {question_number}/{args.num_questions} — {panel_count} panels")
+        print_puzzle_source(dataset, sample, sample_index, args.dataset_dir, displayed_indices,
+                            getattr(args, "raw_dir", None))
         if image_path is not None:
             print(f"Puzzle image: {image_path.resolve()}")
         puzzle_image.show(title=f"Human benchmark — question {question_number}")

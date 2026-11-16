@@ -1,4 +1,8 @@
-"""Build MangaZero ordering puzzles from locally downloaded raw samples."""
+"""Build MangaZero puzzles: left page first, with RTL panels within each page.
+
+The within-page direction can be overridden with --reading-order-ltr. Generated
+metadata records page_reading_direction separately from reading_direction.
+"""
 
 from __future__ import annotations
 # Resolve the project config package when this file is run directly.
@@ -115,7 +119,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-skip-network-errors", action="store_false", dest="skip_network_errors")
     parser.add_argument("--skip-ocr-errors", action="store_true", default=True)
     parser.add_argument("--no-skip-ocr-errors", action="store_false", dest="skip_ocr_errors")
-    parser.add_argument("--ocr-lang", default="ch")
+    parser.add_argument("--ocr-lang", default="en")
     parser.add_argument("--ocr-version", default="PP-OCRv6", choices=("PP-OCRv3", "PP-OCRv4", "PP-OCRv5", "PP-OCRv6"))
     parser.add_argument("--ocr-device", default="gpu:0")
     parser.add_argument("--ocr-mode", default="subprocess", choices=("subprocess", "inline"))
@@ -142,7 +146,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--page-layout", choices=("single", "spread"), default="spread",
-                        help="MangaZero sources contain two stitched physical pages.")
+                        help="MangaZero sources read the stitched left page before the right page; within-page direction is configured separately.")
     parser.add_argument(
         "--sort-panels-reading-order",
         action="store_true",
@@ -233,6 +237,9 @@ def main() -> None:
                         page_split_x=(float(sample["meta"]["width1"])
                                       if args.page_layout == "spread" else None),
                         sort_panels=args.sort_panels_reading_order,
+                        # MangaZero's stitched source reads left page first,
+                        # while each page retains its own (usually RTL) order.
+                        page_rtl=False,
                     )
                 except ReadingOrderError:
                     skipped_reading_order_pages += 1
@@ -294,6 +301,7 @@ def main() -> None:
             "skipped_reading_order_pages": skipped_reading_order_pages,
             "reading_order_version": READING_ORDER_VERSION,
             "reading_direction": "rtl" if args.reading_order_rtl else "ltr",
+            "page_reading_direction": "ltr" if args.page_layout == "spread" else "single",
             "window_policy": "continuous_source_image",
             "page_layout": args.page_layout,
             "build_arguments": {key: str(value) if isinstance(value, Path) else value

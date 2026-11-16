@@ -51,6 +51,8 @@ def sort_bboxes_reading_order(
     rtl: bool = True,
     bbox_key: str = "bbox",
     page_split_x: float | None = None,
+    *,
+    page_rtl: bool | None = None,
 ) -> list[Any]:
     """Read physical pages first, then recursively split rows and columns.
 
@@ -59,7 +61,9 @@ def sort_bboxes_reading_order(
     into columns. No mutable row centers or input-order-dependent clustering
     are used. Touching edges are accepted; actual overlapping layouts without
     a separating cut are rejected. page_split_x is explicit source layout
-    metadata, never guessed from panel dimensions.
+    metadata, never guessed from panel dimensions. page_rtl controls the order
+    of physical pages independently of within-page rtl; None preserves the
+    historical convention of using rtl for both.
     """
     if not items:
         return []
@@ -95,7 +99,8 @@ def sort_bboxes_reading_order(
     pages: dict[str, list[int]] = defaultdict(list)
     for i, bbox in enumerate(boxes):
         pages[physical_page_side(bbox, page_split_x)].append(i)
-    sides = ("single",) if page_split_x is None else (("right", "left") if rtl else ("left", "right"))
+    pages_right_first = rtl if page_rtl is None else page_rtl
+    sides = ("single",) if page_split_x is None else (("right", "left") if pages_right_first else ("left", "right"))
     return [items[i] for side in sides for i in read(pages[side])]
 
 
@@ -107,6 +112,7 @@ def describe_panel_sequence(
     page_split_x: float | None,
     rtl: bool,
     sorted_geometrically: bool = True,
+    page_rtl: bool | None = None,
 ) -> list[dict[str, Any]]:
     """Keep physical page rank distinct from source index and window rank."""
     ranks: dict[str, int] = defaultdict(int)
@@ -125,6 +131,8 @@ def describe_panel_sequence(
             "reading_rank_in_page": ranks[side] if sorted_geometrically else None,
             "reading_rank_in_source": rank if sorted_geometrically else None,
             "reading_direction": "rtl" if rtl else "ltr",
+            "page_reading_direction": ("single" if page_split_x is None else
+                                       "rtl" if (rtl if page_rtl is None else page_rtl) else "ltr"),
             "page_split_x": page_split_x,
             "page_layout": "spread" if page_split_x is not None else "single",
             "reading_order_method": READING_ORDER_METHOD if sorted_geometrically else "source_order",
@@ -141,6 +149,8 @@ def sort_prepared_panels_reading_order(
     rtl: bool = True,
     page_split_x: float | None = None,
     sort_panels: bool = True,
+    *,
+    page_rtl: bool | None = None,
 ) -> list[Any]:
     """Order PreparedPanels and attach provenance without changing source IDs."""
     if not prepared_panels:
@@ -148,10 +158,12 @@ def sort_prepared_panels_reading_order(
     first = prepared_panels[0].record
     ordered = sort_bboxes_reading_order(
         list(prepared_panels), first.page_size[1], rtl=rtl, page_split_x=page_split_x,
+        page_rtl=page_rtl,
     ) if sort_panels else list(prepared_panels)
     metadata = describe_panel_sequence(
         ordered, page_id=first.page_id, source_image_id=first.source_image_path,
         page_split_x=page_split_x, rtl=rtl, sorted_geometrically=sort_panels,
+        page_rtl=page_rtl,
     )
     for panel, fields in zip(ordered, metadata):
         record = panel.record
@@ -170,7 +182,7 @@ def sequence_provenance(panels: list[dict[str, Any]]) -> dict[str, Any]:
     """Sample metadata for a window, which may contain both physical pages."""
     first = panels[0]
     keys = (
-        "source_image_id", "spread_id", "reading_direction", "page_split_x", "page_layout",
+        "source_image_id", "spread_id", "reading_direction", "page_reading_direction", "page_split_x", "page_layout",
         "reading_order_method", "reading_order_version", "reading_order_status", "window_policy",
     )
     return {

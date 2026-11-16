@@ -19,3 +19,4 @@ Solver/checkpoints*
 *.zip
 third_party/*
 experiments/*
+/Mangazero/6panel_dataset

@@ -40,6 +40,46 @@ it directly for ordering. `data/given_start.py` retains compatibility imports fo
 first-only studies; the implementations live in `puzzle.py`. The human benchmark
 and the RQ ordering code use the same endpoint contract.
 
+## Inspect ordering labels
+
+Export an offline HTML review of the data/label pipeline (no model or GPU needed):
+
+```sh
+python Solver/audit_ordering_dataset.py --dataset-dir Data/Mangazero/6panel_ordering_dataset_stride3 --split train --num-samples 20 --seed 42 --output-dir output/mangazero_audit
+```
+
+Open `output/mangazero_audit/audit.html` in a browser. Each question shows the
+given START/END, shuffled input and GT reading order, with dialogue, original
+text, translations and descriptions when present. The images are exported from
+the actual dataset tensors, at the same 224×224 default used by training.
+Use `--image-width` / `--image-height` to match a different training run.
+Each panel can also show its original padded image for checking lost detail;
+`--no-original-images` omits these to reduce file size. All images are embedded,
+so the HTML can be copied from a server and viewed offline.
+
+Choose correct/incorrect/uncertain, optionally enter a corrected full order and
+notes, then **export the review JSONL**. The page supports importing those
+reviews to continue later; browser local storage is only a convenience. Panel
+IDs and corrected orders use **zero-based input slots**, including both given
+endpoints. A suggested correction may change the endpoints if their labels are
+wrong. `solver dialog_text` is the field supplied by the shared loader;
+other text fields are shown for auditing and may not be consumed by a solver.
+
+The tool reuses the training loader, endpoint transform and synchronized
+middle-panel shuffle. It draws questions without replacement from the requested
+split and assigns a reproducible per-question shuffle seed (`seed + split index`);
+this reproduces the transformation, not an exact batch from a past training run.
+Use `--sample-indices 0 5 12` to inspect specific split indices, or
+`--shuffle-mode dataset` to keep the endpoint-conditioned dataset order without
+the extra training shuffle. `--manifest-path` accepts experiment manifests.
+
+The output also contains `audit_samples.json` with original labels, index
+mapping, panel metadata and text, plus `startup_config.json` with the launch
+parameters. Defaults live in `config/Solver/audit_ordering_dataset.json`.
+For label review, check the GT sequence for narrative consistency, the endpoints
+for correctness, and whether text and original-source indices follow their
+images through shuffling.
+
 ## Available solvers
 
 | `--solver` | Architecture |

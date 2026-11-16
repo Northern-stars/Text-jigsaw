@@ -272,20 +272,30 @@ class MangaZeroQwenVLNonAutoregressiveSolver(nn.Module):
     def prepare_inputs(self, panel_images: Tensor, dialog_texts: Optional[list[list[str]]] = None) -> dict[str, Tensor]:
         if panel_images.ndim != 5 or panel_images.size(1) != self.panel_count:
             raise ValueError(f"panel_images must have shape [B,{self.panel_count},3,H,W], got {tuple(panel_images.shape)}")
+        if dialog_texts and (
+            len(dialog_texts) != panel_images.size(0)
+            or any(len(row) != self.panel_count for row in dialog_texts)
+        ):
+            raise ValueError("dialog_texts must contain one text per input panel in each batch item")
         conversations = []
         for batch_index in range(panel_images.size(0)):
-            content = [{"type": "image", "image": tensor_to_pil(panel_images[batch_index, index])}
-                       for index in range(self.panel_count)]
             prompt = (
-                f"There are {self.panel_count} comic panels in randomized input order. "
+                f"There are {self.panel_count} comic panels in input-slot order. "
                 f"Panel 0 is the known opening and panel {self.panel_count - 1} is the known ending. "
+                "The middle panels are shuffled. Panel IDs refer to input slots, not reading positions. "
                 "Represent only the middle reading order using visual continuity and panel content."
             )
             if dialog_texts:
                 text_lines = [f"panel {i}: {str(text).strip()}" for i, text in enumerate(dialog_texts[batch_index]) if str(text).strip()]
                 if text_lines:
                     prompt += "\nOCR text:\n" + "\n".join(text_lines)
-            content.append({"type": "text", "text": prompt})
+            # The readout pools image-token hidden states from a causal LM.
+            # Put *all* task/OCR text first so even the opening image can see
+            # it; appending text after the images makes it invisible to them.
+            content = [{"type": "text", "text": prompt}]
+            for index in range(self.panel_count):
+                content.append({"type": "text", "text": f"\nPanel {index}:\n"})
+                content.append({"type": "image", "image": tensor_to_pil(panel_images[batch_index, index])})
             conversations.append([{"role": "user", "content": content}])
         texts = [self.processor.apply_chat_template(c, tokenize=False, add_generation_prompt=False) for c in conversations]
         try:
