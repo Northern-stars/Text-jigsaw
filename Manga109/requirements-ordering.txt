@@ -1,0 +1,4 @@
+# CPU-only panel ordering; no Magi detector weights or Shapely runtime needed.
+numpy>=1.24
+Pillow>=10
+networkx>=3.2,<4

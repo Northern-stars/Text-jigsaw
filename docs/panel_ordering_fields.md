@@ -166,7 +166,7 @@ info 字段：
 ## 6. 生产链路的细微差异
 
 - `Mangazero/build_dataset.py`：panel 来自数据集自带 `frames`，`global_order = page_index*10000 + panel_index`，OCR 可关（`--disable-ocr` 时 `dialog_text` 为空）。
-- `Manga109/create_ordering.py`：panel 来自 XML `<frame>`，按 `sort_bboxes_reading_order` 计算阅读顺序，用滑动窗口 `stride` 切窗。
+- `Manga109/create_ordering.py`：panel 来自 XML `<frame>`，按物理页使用 MangaWhisper / Magi v1 计算阅读顺序（GT 版本 3），用滑动窗口 `stride` 切窗；来源版本与适配说明见 [MangaWhisper 文档](manga109_manga_whisper_order.md)。
 - `comix/create_panel_ordering_dataset.py`（COMICS 老数据集）：沿用 OCR CSV，按官方 `panel_no` 排序。
 - `comix/comix_pipeline.py`（COMIX Hugging Face）：实现集中在该模块，`stream_comix.py` / `download_raw.py` / `build_ordering_dataset.py` 只是入口转发。默认按 `sort_prepared_panels_reading_order` 几何重排（`--no-sort-panels-reading-order` 可退回检测顺序，`--reading-order-ltr` 可切西式顺序）。
 - 以上链路都保证输出可直接喂给 `MangaZeroPanelOrderingDataset`，无需改字段。

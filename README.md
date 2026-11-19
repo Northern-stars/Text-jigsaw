@@ -93,6 +93,8 @@ python Solver/test.py --dataset-dir Data/comix/6panel-ordering --checkpoint Solv
 
 数据生成与训练脚本均带 `argparse` 参数，详细示例见 `docs/RL_PIPELINE.md`、`docs/AGENT_DESIGN.md` 和 `docs/mangazero_panel_ordering_plan.md`。主要依赖包括 PyTorch、torchvision、Pillow、NumPy、datasets、PaddleOCR（可选）、OpenCV 等；生成的数据和训练 checkpoint 默认已被 `.gitignore` 排除。
 
+Manga109 的 panel 排序采用 MangaWhisper / Magi v1，额外依赖 NetworkX；可安装 `Manga109/requirements-ordering.txt`。算法来源、GT 版本和生成方式见 [Manga109 阅读顺序说明](docs/manga109_manga_whisper_order.md)。
+
 COMICS 构建示例：
 
 ```bash

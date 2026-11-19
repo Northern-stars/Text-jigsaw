@@ -22,7 +22,7 @@ Example::
         --panel-count 6 --puzzle-num 200
 
 The tool reads <frame> elements from each page's annotation, computes their
-natural reading order (top-to-bottom, right-to-left for manga), and produces
+reading order with MangaWhisper (Magi v1) within each physical page, and produces
 fixed-length sliding-window samples.  Pages with too few frames are skipped.
 """
 
@@ -55,8 +55,11 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from Manga109.reading_order_utils import (
-    READING_ORDER_VERSION, ReadingOrderError, describe_panel_sequence,
-    sequence_provenance, sort_bboxes_reading_order,
+    ReadingOrderError, describe_panel_sequence, sequence_provenance,
+)
+from Manga109.manga_whisper_order import (
+    READING_ORDER_METHOD, READING_ORDER_VERSION, UPSTREAM_REVISION, UPSTREAM_SOURCE,
+    sort_manga_whisper_reading_order,
 )
 
 
@@ -140,10 +143,7 @@ def sort_frames_reading_order(
     rtl: bool = True,
     page_split_x: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Sort frame bboxes in manga reading order (top-to-bottom, right-to-left).
-
-    Physical pages are ordered before recursive row/column gutter splitting.
-    """
+    """Sort XML frames with page-aware MangaWhisper (Magi v1) ordering."""
     class _FrameWithBbox:
         __slots__ = ("frame", "bbox")
 
@@ -152,12 +152,8 @@ def sort_frames_reading_order(
             self.bbox = [frame["xmin"], frame["ymin"], frame["xmax"], frame["ymax"]]
 
     wrapped = [_FrameWithBbox(frame) for frame in frames]
-    sorted_wrapped = sort_bboxes_reading_order(
-        wrapped,
-        page_height=page_height,
-        rtl=rtl,
-        bbox_key="bbox",
-        page_split_x=page_split_x,
+    sorted_wrapped = sort_manga_whisper_reading_order(
+        wrapped, rtl=rtl, page_split_x=page_split_x,
     )
     return [item.frame for item in sorted_wrapped]
 
@@ -379,6 +375,12 @@ def create_manga109_ordering(
             page_split_x=page_split_x, rtl=rtl,
         )
         for frame, fields in zip(ordered_frames, metadata):
+            fields.update({
+                "reading_order_method": READING_ORDER_METHOD,
+                "reading_order_version": READING_ORDER_VERSION,
+                "reading_order_source": UPSTREAM_SOURCE,
+                "reading_order_source_revision": UPSTREAM_REVISION,
+            })
             frame["reading_order_metadata"] = fields
 
         # Assign text to frames
@@ -478,6 +480,8 @@ def create_manga109_ordering(
                 "target_order": target_order,
                 "text_source": "xml_translated" if translator is not None else "xml_original",
                 **sequence_provenance(shuffled_panels),
+                "reading_order_source": UPSTREAM_SOURCE,
+                "reading_order_source_revision": UPSTREAM_REVISION,
             }
 
             with (puzzle_dir / "sample.json").open("w", encoding="utf-8") as f:
@@ -515,6 +519,9 @@ def create_manga109_ordering(
         "skipped_windows": skipped_windows,
         "skipped_reading_order_pages": skipped_reading_order_pages,
         "reading_order_version": READING_ORDER_VERSION,
+        "reading_order_method": READING_ORDER_METHOD,
+        "reading_order_source": UPSTREAM_SOURCE,
+        "reading_order_source_revision": UPSTREAM_REVISION,
         "reading_direction": "rtl" if rtl else "ltr",
         "page_layout": page_layout,
         "window_policy": "continuous_source_image",
